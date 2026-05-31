@@ -207,13 +207,26 @@
   @keyframes pinIn{from{opacity:0; transform:translateY(-4px)}to{opacity:1; transform:none}}
   .pinbar{display:flex; gap:7px; overflow-x:auto; scrollbar-width:none; padding:8px 12px;}
   .pinbar::-webkit-scrollbar{display:none;}
-  .pin-pill{flex-shrink:0; display:inline-flex; align-items:center; gap:6px; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.02em; padding:5px 5px 5px 10px; border:1px solid color-mix(in srgb, var(--accent) 45%, var(--line-bright)); border-radius:7px; background:color-mix(in srgb, var(--accent) 11%, transparent); color:var(--accent); white-space:nowrap;}
-  .pin-pill .cnt{font-weight:700; background:color-mix(in srgb, var(--accent) 24%, transparent); border-radius:8px; padding:0 6px; font-size:11px;}
+  .pin-pill{flex-shrink:0; display:inline-flex; align-items:center; gap:6px; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.02em; padding:5px 5px 5px 10px; border:1px solid color-mix(in srgb, var(--pc,var(--accent)) 45%, var(--line-bright)); border-radius:7px; background:color-mix(in srgb, var(--pc,var(--accent)) 11%, transparent); color:var(--pc,var(--accent)); white-space:nowrap;}
+  .pin-pill .cnt{font-weight:700; background:color-mix(in srgb, var(--pc,var(--accent)) 24%, transparent); border-radius:8px; padding:0 6px; font-size:11px;}
   .pin-pill .star{font-size:11px;}
   .pin-pill .pin-x{cursor:pointer; opacity:.6; font-size:15px; line-height:1; padding:0 4px; color:var(--ink-dim);}
   .pin-pill .pin-x:active{opacity:1; color:var(--ink);}
   .pin-add{flex-shrink:0; display:inline-flex; align-items:center; cursor:pointer; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.04em; padding:5px 12px; border:1px dashed var(--line-bright); border-radius:7px; color:var(--ink-dim); background:transparent;}
   .pin-add:active{color:var(--accent); border-color:var(--accent);}
+
+  /* filter segment (movie view toggle) reuses the pin-bar slot */
+  .filt-seg{flex-shrink:0; display:inline-flex; align-items:center; gap:6px; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.04em; padding:5px 12px; border:1px solid var(--line-bright); border-radius:7px; background:var(--bg-2); color:var(--ink-dim); white-space:nowrap; cursor:pointer;}
+  .filt-seg.on{background:color-mix(in srgb, var(--accent) 14%, transparent); border-color:var(--accent); color:var(--accent);}
+  .filt-seg.dim{opacity:.45;}
+  .filt-search{flex-shrink:0; display:inline-flex; align-items:center; gap:5px; padding:4px 6px 4px 10px; border:1px solid var(--line-bright); border-radius:7px; background:var(--bg-2); min-width:120px;}
+  .filt-search.on{border-color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent);}
+  .filt-search svg{width:13px; height:13px; color:var(--ink-dimmer); flex-shrink:0;}
+  .filt-search.on svg{color:var(--accent);}
+  .filt-search input{border:none; outline:none; background:transparent; color:var(--ink); font-family:'IBM Plex Mono',monospace; font-size:12px; width:88px; padding:1px 0;}
+  .filt-search input::placeholder{color:var(--ink-dimmer);}
+  .filt-search .fs-x{cursor:pointer; color:var(--ink-dim); font-size:15px; line-height:1; padding:0 3px;}
+  .filt-search .fs-x:active{color:var(--ink);}
 
   /* add pop-up */
   .add-input{display:block; width:calc(100% - 36px); margin:2px 18px 0; padding:12px 14px; background:var(--bg-2); border:1px solid var(--line-bright); border-radius:9px; color:var(--ink); font-family:'IBM Plex Mono',monospace; font-size:15px; outline:none;}
@@ -223,7 +236,7 @@
   .add-btn{display:block; width:calc(100% - 36px); margin:14px 18px 8px; padding:13px; text-align:center; border:none; border-radius:9px; background:var(--accent); color:#06120c; font-family:'IBM Plex Mono',monospace; font-weight:700; font-size:13px; letter-spacing:.08em; cursor:pointer;}
   .add-btn:active{filter:brightness(.92);}
 
-  .pin-pill.on{background:var(--accent); color:#06120c; border-color:var(--accent);}
+  .pin-pill.on{background:var(--pc,var(--accent)); color:#06120c; border-color:var(--pc,var(--accent));}
   .pin-pill.on .pin-x{color:#06120c;} .pin-pill.on .cnt{background:rgba(0,0,0,.18);}
 
   /* settings sheet */
@@ -1267,6 +1280,16 @@
     scores: '<circle cx="12" cy="12" r="8"/><path d="M12 4v16M4 12h16M6.5 6.5l11 11M17.5 6.5l-11 11"/>'
   };
   var SECTION_COLOR = { news: "--c-world", pages: "--c-ent", markets: "--c-markets", scores: "--c-sports" };
+  var PIN_PALETTE = ["#f5b524", "#ef5350", "#46a6ff", "#ff7a47", "#4db8a8", "#c77dff", "#52d6a0", "#3ee089", "#ff7eb3", "#9ea0ff", "#ffd24a", "#39d0d8", "#f72585", "#7bd45a", "#ff9233", "#5bc8ff"];
+  function pinColor(ctx, val2) {
+    if (ctx === "stocks" || ctx === "tsx") return "var(--c-markets)";
+    let h = 0;
+    const s = String(val2).toLowerCase();
+    for (let i = 0; i < s.length; i++) {
+      h = h * 31 + s.charCodeAt(i) >>> 0;
+    }
+    return PIN_PALETTE[h % PIN_PALETTE.length];
+  }
   var ui = {
     section: "news",
     tab: { news: 0, pages: 0, markets: 0, scores: 0 },
@@ -1296,7 +1319,10 @@
   function storyHTML(it, key) {
     const def = TOPIC_DEFS[key] || {};
     const tag = it.tag || def.tag || "world";
-    const tc = `var(${tagColor[tag] || "--c-world"})`;
+    let tc = `var(${tagColor[tag] || "--c-world"})`;
+    if ((tag === "pin" || tag === "sports") && it.kw) {
+      tc = pinColor(key === "sports" ? "sports" : "pinned", it.kw);
+    }
     const label = it.label || def.label || key;
     const pop = it.pop >= 2 ? `<span class="pop pop${Math.min(it.pop, 5)}">\u{1F525}${it.pop}</span>` : "";
     const fav = it.fav ? '<span class="star">\u2605</span> ' : "";
@@ -1535,7 +1561,41 @@
     if (ctx === "sports") return SPIN_COUNTS[v] || 0;
     return 0;
   }
+  var MOVIE_VIEWS = [["theatres", "IN THEATRES"], ["streaming", "STREAMING"], ["recent", "RECENT"]];
+  var SEARCH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>';
+  function renderFilterBar() {
+    const wrap = $("pinbarWrap");
+    wrap.style.setProperty("--accent", "var(--c-review)");
+    const searching = !!state.MOVIE_SEARCH_Q;
+    const segs = MOVIE_VIEWS.map(([k, lbl]) => `<span class="filt-seg ${!searching && state.MOVIE_FILTER === k ? "on" : ""}${searching ? " dim" : ""}" data-mv-filter="${k}">${lbl}</span>`).join("");
+    const search = `<span class="filt-search ${searching ? "on" : ""}">${SEARCH_ICON}<input id="movieSearch" type="search" autocomplete="off" placeholder="Search films" value="${escAttr(state.MOVIE_SEARCH_Q || "")}"><span class="fs-x" data-search-clear style="${searching ? "" : "display:none"}">\xD7</span></span>`;
+    wrap.querySelector(".pinbar").innerHTML = segs + search;
+    wrap.classList.add("show");
+    const inp = $("movieSearch");
+    if (inp) inp.addEventListener("input", onMovieSearchInput);
+  }
+  function syncFilterBarState() {
+    const searching = !!$("movieSearch")?.value.trim();
+    document.querySelectorAll("#pinbarWrap .filt-seg").forEach((s) => {
+      s.classList.toggle("dim", searching);
+      s.classList.toggle("on", !searching && s.dataset.mvFilter === state.MOVIE_FILTER);
+    });
+    const fs = document.querySelector("#pinbarWrap .filt-search");
+    if (fs) {
+      fs.classList.toggle("on", searching);
+      const x = fs.querySelector(".fs-x");
+      if (x) x.style.display = searching ? "" : "none";
+    }
+  }
   function renderPinBar() {
+    if (ui.section === "pages" && (visTabs("pages")[ui.tab.pages] || [])[0] === "reviews") {
+      if (document.activeElement && document.activeElement.id === "movieSearch") {
+        syncFilterBarState();
+        return;
+      }
+      renderFilterBar();
+      return;
+    }
     const ctx = pinCtx(), wrap = $("pinbarWrap");
     if (!ctx) {
       wrap.classList.remove("show");
@@ -1547,12 +1607,22 @@
       const star = cfg.star ? '<span class="star">\u2605</span>' : "";
       const label = cfg.kind === "ticker" ? v.toUpperCase() + (ctx === "tsx" ? ".TO" : "") : v;
       const on = ui.pinFilter[ctx] === v ? " on" : "";
-      return `<span class="pin-pill${on}" data-pin="${escAttr(v)}">${star}${esc(label)}${cnt}<span class="pin-x" data-rm="${escAttr(v)}">\xD7</span></span>`;
+      const pc = pinColor(ctx, v);
+      return `<span class="pin-pill${on}" style="--pc:${pc}" data-pin="${escAttr(v)}">${star}${esc(label)}${cnt}<span class="pin-x" data-rm="${escAttr(v)}">\xD7</span></span>`;
     }).join("");
     wrap.querySelector(".pinbar").innerHTML = pills + `<span class="pin-add">+ ${cfg.word}</span>`;
     wrap.classList.add("show");
   }
   $("pinbarWrap").addEventListener("click", (e) => {
+    if (e.target.closest("[data-search-clear]")) {
+      clearMovieSearch();
+      return;
+    }
+    const mv = e.target.closest("[data-mv-filter]");
+    if (mv) {
+      setMovieView(mv.dataset.mvFilter);
+      return;
+    }
     const rm = e.target.closest(".pin-x");
     if (rm) {
       removePin(pinCtx(), rm.dataset.rm);
@@ -1567,6 +1637,48 @@
       toggleFilter(pinCtx(), pill.dataset.pin);
     }
   });
+  function setMovieView(view) {
+    if (state.MOVIE_SEARCH_Q) {
+      state.MOVIE_SEARCH_Q = "";
+    }
+    if (state.MOVIE_FILTER === view && !searchWasActive()) {
+      syncFilterBarState();
+      return;
+    }
+    state.MOVIE_FILTER = view;
+    save();
+    renderFilterBar();
+    showMoviesLoading();
+    news.refresh();
+  }
+  function searchWasActive() {
+    const i = $("movieSearch");
+    return i && i.value.trim() !== "";
+  }
+  function showMoviesLoading() {
+    const pane = $("track").children[ui.tab.pages];
+    if (pane) pane.innerHTML = '<div class="pane-inner"><div class="empty">Loading\u2026</div></div>';
+  }
+  var movieSearchTimer = null;
+  function onMovieSearchInput(e) {
+    const q = e.target.value.trim();
+    syncFilterBarState();
+    clearTimeout(movieSearchTimer);
+    movieSearchTimer = setTimeout(() => {
+      if (state.MOVIE_SEARCH_Q === q) return;
+      state.MOVIE_SEARCH_Q = q;
+      save();
+      showMoviesLoading();
+      news.refresh();
+    }, 450);
+  }
+  function clearMovieSearch() {
+    state.MOVIE_SEARCH_Q = "";
+    save();
+    renderFilterBar();
+    showMoviesLoading();
+    news.refresh();
+  }
   function toggleFilter(ctx, val2) {
     if (!ctx) return;
     ui.pinFilter[ctx] = ui.pinFilter[ctx] === val2 ? null : val2;
