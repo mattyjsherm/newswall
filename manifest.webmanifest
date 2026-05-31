@@ -1,0 +1,12 @@
+{
+  "name": "News Wall",
+  "short_name": "News Wall",
+  "description": "Live news, sports, markets and weather.",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070809",
+  "theme_color": "#070809",
+  "start_url": "./",
+  "scope": "./",
+  "icons": []
+}
