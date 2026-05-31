@@ -258,6 +258,8 @@
   header{padding-top:calc(10px + env(safe-area-inset-top));}
   nav{padding-bottom:calc(10px + env(safe-area-inset-bottom));}
   a.game{text-decoration:none; color:inherit;}
+  a.story{text-decoration:none; color:inherit;}
+  a.story:hover .s-head{color:#fff;}
   .story{ -webkit-touch-callout:none; }
   .refreshing .onair .dot{animation-duration:.7s;}
 
@@ -1303,7 +1305,7 @@
     if (it.rt != null) meter = `<span class="tomato ${it.rt >= 60 ? "fresh" : "rotten"}">${it.rt >= 60 ? "\u{1F345}" : "\u{1F7E2}"} ${it.rt}%</span>`;
     const meta = it.tmdb != null ? `TMDB ${it.tmdb}` : it.time ? timeAgo(it.time) : "";
     const title = def.strip ? String(it.title).replace(def.strip, "") : it.title;
-    const readCls = ui.read.has(it.link) ? " read" : "";
+    const readCls = READ.has(it.link) ? " read" : "";
     const reviewCls = it.isReview ? " review-accent" : "";
     return `<a class="story${reviewCls}${readCls}" href="${escAttr(it.link)}" target="_blank" rel="noopener" data-link="${escAttr(it.link)}">
     <div class="s-top"><span class="s-tag" style="background:color-mix(in srgb, ${tc} 16%, transparent);color:${tc}">${fav}${esc(label)}</span>${src}${meter}${pop}<span class="s-meta">${meta}</span></div>
@@ -1332,9 +1334,21 @@
     const price = o.price != null && !isNaN(o.price) ? "$" + (o.price >= 1 ? o.price.toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : o.price.toFixed(4)) : "\u2014";
     return `<div class="mk-row"><div><div class="mk-sym">${esc(o.sym)}</div>${o.name ? `<div class="mk-name">${esc(o.name)}</div>` : ""}</div><div class="mk-price">${price}</div><div class="mk-chg ${cls}">${chgTxt}</div></div>`;
   }
+  function tickerRows(ctx) {
+    const list = ctx === "tsx" ? state.CA_STOCKS : state.STOCKS;
+    const quotes = ctx === "tsx" ? LATEST.caStocks || [] : LATEST.equities && LATEST.equities.stocks || [];
+    const qmap = {};
+    quotes.forEach((q) => {
+      qmap[String(q.sym).replace(/\.TO$/i, "").toUpperCase()] = q;
+    });
+    return list.map((sym) => {
+      const base = String(sym).replace(/\.TO$/i, "").toUpperCase(), q = qmap[base];
+      return { sym: ctx === "tsx" ? base + ".TO" : base, price: q ? q.price : null, chg: q ? q.chg : null };
+    });
+  }
   function marketsPane(key) {
     const E = LATEST.equities || { indexes: [], stocks: [] };
-    const groups = { indexes: ["INDEXES", E.indexes || []], stocks: ["US STOCKS", E.stocks || []], crypto: ["CRYPTO", LATEST.crypto || []], tsx: ["TSX / CANADIAN", LATEST.caStocks || []], rates: ["CANADIAN RATES", LATEST.rates || []] };
+    const groups = { indexes: ["INDEXES", E.indexes || []], stocks: ["US STOCKS", tickerRows("stocks")], crypto: ["CRYPTO", LATEST.crypto || []], tsx: ["TSX / CANADIAN", tickerRows("tsx")], rates: ["CANADIAN RATES", LATEST.rates || []] };
     const show = key === "overview" ? ["indexes", "stocks", "crypto", "tsx", "rates"] : [key];
     if (!ui.loaded) return `<div class="pane-inner"><div class="empty">Loading\u2026</div></div>`;
     let html = '<div class="pane-inner">';
@@ -1446,8 +1460,7 @@
     if (a) {
       const link = a.dataset.link;
       if (link) {
-        ui.read.add(link);
-        state.READ.add(link);
+        READ.add(link);
         save();
         a.classList.add("read");
       }
