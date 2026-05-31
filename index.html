@@ -8,7 +8,6 @@
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="News Wall" />
-<link rel="manifest" href="./manifest.webmanifest" />
 <title>News Wall — Mobile UI</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -359,415 +358,1441 @@
   </div>
 </div>
 
-<script type="module">
+<script>
+(() => {
+  // news-data/config.js
+  var runtime = {
+    // ── secrets (move server-side before shipping) ──
+    STOCK_API_KEY: "d8cum19r01qt0j1ii76gd8cum19r01qt0j1ii770",
+    // Finnhub
+    TMDB_API_KEY: "53acbc31196a990f49f0c9b2b2fb5ff7",
+    // TMDB v3
+    OMDB_API_KEY: "f8e036b0",
+    // OMDb (RT scores)
+    RSS2JSON_KEY: "zygsy7rzz4fumxlilmmdxz7uqz1qf6tlgbfu6zwk",
+    // rss2json (40-item feeds)
+    // ── feed network ──
+    // When set, the Worker is the PRIMARY fetcher (server-side, no CORS / no proxy
+    // rate limits / no Google-News hangs). Everything still falls back if it's down.
+    FEED_WORKER: "https://news-wall-proxy.mattyjsherm.workers.dev",
+    // Public CORS proxies, tried in order. A single flaky proxy can't empty a feed.
+    FEED_PROXIES: [
+      (u) => "https://corsproxy.io/?url=" + encodeURIComponent(u),
+      (u) => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+      (u) => "https://api.codetabs.com/v1/proxy/?quest=" + encodeURIComponent(u)
+    ],
+    // Proxy used for the JSON APIs that lack CORS headers (BoC Valet, Yahoo TSX).
+    CA_PROXY: "https://api.allorigins.win/raw?url=",
+    FETCH_TIMEOUT_MS: 9e3,
+    // hard abort for any single request (Google News hangs)
+    // ── INJECTION POINT 1: XML → items ──
+    // Must return Array<{ title, link, time }>. Defaults to a DOMParser-based
+    // implementation on web (set in feeds.js if left null). On React Native,
+    // inject a fast-xml-parser/react-native-xml2js based function here.
+    parseFeedXml: null,
+    // ── INJECTION POINT 2: persistence ──
+    // Adapter with getItem(key)->string|null and setItem(key,string). Defaults to
+    // localStorage on web (set in store.js if left null). On mobile, inject an
+    // AsyncStorage/MMKV-backed adapter (sync or async; store.js handles both).
+    storage: null
+  };
+  var REFRESH_MS = 6e4;
+  var CA_REFRESH_MS = 10 * 6e4;
+  var NEW_WINDOW_MS = 90 * 6e4;
+  var NEWS_STEPS = [20, 40];
+  var LOCATIONS = [
+    { key: "vancouver", city: "Vancouver", code: "YVR", lat: 49.28, lon: -123.12, tz: "America/Vancouver", cbc: "britishcolumbia", globe: "british-columbia" },
+    { key: "calgary", city: "Calgary", code: "YYC", lat: 51.05, lon: -114.07, tz: "America/Edmonton", cbc: "calgary", globe: "alberta" },
+    { key: "edmonton", city: "Edmonton", code: "YEG", lat: 53.55, lon: -113.49, tz: "America/Edmonton", cbc: "edmonton", globe: "alberta" },
+    { key: "winnipeg", city: "Winnipeg", code: "YWG", lat: 49.9, lon: -97.14, tz: "America/Winnipeg", cbc: "manitoba", globe: null },
+    { key: "toronto", city: "Toronto", code: "YYZ", lat: 43.65, lon: -79.38, tz: "America/Toronto", cbc: "toronto", globe: "ontario" },
+    { key: "ottawa", city: "Ottawa", code: "YOW", lat: 45.42, lon: -75.7, tz: "America/Toronto", cbc: "ottawa", globe: "ontario" },
+    { key: "kingston", city: "Kingston", code: "YGK", lat: 44.23, lon: -76.49, tz: "America/Toronto", cbc: "ottawa", globe: "ontario" },
+    { key: "montreal", city: "Montreal", code: "YUL", lat: 45.5, lon: -73.57, tz: "America/Toronto", cbc: "montreal", globe: "quebec" },
+    { key: "halifax", city: "Halifax", code: "YHZ", lat: 44.65, lon: -63.58, tz: "America/Halifax", cbc: "novascotia", globe: null },
+    { key: "stjohns", city: "St. John's", code: "YYT", lat: 47.56, lon: -52.71, tz: "America/St_Johns", cbc: "newfoundland", globe: null }
+  ];
+  var LEAGUES = [
+    ["basketball/nba", "NBA"],
+    ["hockey/nhl", "NHL"],
+    ["baseball/mlb", "MLB"],
+    ["football/nfl", "NFL"],
+    ["soccer/eng.1", "EPL"]
+  ];
+  var SPORTS_FEED = "https://www.espn.com/espn/rss/news";
+  var SPORTS_PIPE = [
+    ["https://www.espn.com/espn/rss/mlb/news", "ESPN MLB"],
+    ["https://www.espn.com/espn/rss/nba/news", "ESPN NBA"],
+    ["https://www.espn.com/espn/rss/nfl/news", "ESPN NFL"],
+    ["https://www.espn.com/espn/rss/nhl/news", "ESPN NHL"],
+    ["https://www.sportsnet.ca/feed/", "Sportsnet"],
+    ["https://rss.cbc.ca/lineup/sports.xml", "CBC Sports"],
+    ["https://www.thescore.com/rss", "theScore"]
+  ];
+  var SPORTS_FRESH_MS = 36 * 3600 * 1e3;
+  var SPORTS_PER_KW = 8;
+  var TOPIC_DEFS = {
+    world: { label: "World", tag: "world", feed: "https://feeds.bbci.co.uk/news/world/rss.xml", extra: [["https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/world/", "G&M"]] },
+    canada: { label: "Canada", tag: "canada", feed: "https://www.cbc.ca/webfeed/rss/rss-canada", extra: [["https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/canada/", "G&M"]] },
+    local: { label: "YVR", tag: "local", feed: "https://www.cbc.ca/webfeed/rss/rss-canada-britishcolumbia", extra: [["https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/british-columbia/", "G&M"]] },
+    tech: { label: "Tech", tag: "tech", feed: "https://feeds.arstechnica.com/arstechnica/index", extra: [["https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/business/technology/", "G&M"]] },
+    business: { label: "Business", tag: "biz", fetch: "business" },
+    ai: { label: "AI", tag: "ai", feed: "https://news.google.com/rss/search?q=artificial%20intelligence&hl=en-CA&gl=CA&ceid=CA:en" },
+    pinned: { label: "Pinned", tag: "pin", kind: "news", fetch: "pinned", pinned: true },
+    ringer: { label: "The Ringer", tag: "ringer", kind: "page", feed: "https://news.google.com/rss/search?q=site:theringer.com&hl=en-CA&gl=CA&ceid=CA:en", strip: /\s+-\s+The Ringer\s*$/i },
+    hbr: { label: "HBR", tag: "biz", chipTag: "biz-page", kind: "page", feed: "https://news.google.com/rss/search?q=site:hbr.org&hl=en-CA&gl=CA&ceid=CA:en", strip: /\s+-\s+Harvard Business Review\s*$/i },
+    entertainment: { label: "Variety", tag: "ent", kind: "page", feed: "https://variety.com/feed/", transform: "highlightReviews", reviews: true, meter: "rt" },
+    games: { label: "IGN", tag: "games", kind: "page", feed: "https://news.google.com/rss/search?q=site:ign.com&hl=en-CA&gl=CA&ceid=CA:en", transform: "highlightReviews", reviews: true, strip: /\s+-\s+IGN\s*$/i },
+    reviews: { label: "Movie Reviews", tag: "review", kind: "page", fetch: "reviews", movieFilter: true }
+  };
+  var DEFAULT_TOPICS_ON = ["world", "canada", "local", "tech", "business", "ai", "pinned", "ringer", "hbr", "entertainment", "games", "reviews"];
+  var DEFAULT_TOPIC_ORDER = ["world", "canada", "local", "tech", "business", "ai", "pinned", "ringer", "hbr", "reviews", "entertainment", "games"];
+  var BUSINESS_FEEDS = [
+    ["https://www.cnbc.com/id/10001147/device/rss/rss.html", "CNBC"],
+    ["https://finance.yahoo.com/news/rssindex", "YAHOO"],
+    ["https://fortune.com/feed/", "FORTUNE"],
+    ["https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/business/", "G&M"]
+  ];
+  var AD_PATTERNS = /(\bdaily deals\b|\bbest deals?\b|\bdeal of the day\b|\d+%\s*off|\bsave \$\d|\bprime day\b|\bblack friday\b|\bcyber monday\b|\bdiscount code\b|\bcoupon\b|\blowest price\b|\bsponsored\b|\bgiveaway\b|\bsweepstakes\b|^\s*\[deal\]|\bign store\b)/i;
+  var INDEXES = [["SPY", "S&P 500"], ["QQQ", "NASDAQ"], ["DIA", "DOW"]];
+  var DEFAULT_STOCKS = ["AAPL", "MSFT", "NVDA", "TSLA"];
+  var DEFAULT_CA_STOCKS = ["CSU", "SHOP", "RY"];
+  var VALET = "https://www.bankofcanada.ca/valet/observations/";
+  var RATES = [
+    { id: "POLICY", label: "BoC POLICY", series: "V39079", fallback: 2.75, src: "Bank of Canada \xB7 target overnight rate" },
+    { id: "PRIME", label: "PRIME", series: "V80691311", fallback: 4.95, src: "Bank of Canada \xB7 chartered-bank prime" },
+    { id: "GOC5", label: "GoC 5Y", series: "BD.CDN.5YR.DQ.YLD", fallback: 2.86, src: "Government of Canada 5-year benchmark bond yield" },
+    { id: "GOC10", label: "GoC 10Y", series: "BD.CDN.10YR.DQ.YLD", fallback: 3.24, src: "Government of Canada 10-year benchmark bond yield" },
+    { id: "MTG5", label: "5Y MTG", series: "V80691335", fallback: 6.49, src: "BoC chartered-bank 5-year conventional mortgage (posted)" }
+  ];
+  var MOVIE_FILTERS = {
+    theatres: { label: "IN THEATRES", path: "/movie/now_playing", params: "&region=CA" },
+    streaming: { label: "STREAMING", path: "/discover/movie", params: "&watch_region=CA&with_watch_monetization_types=flatrate&sort_by=primary_release_date.desc&vote_count.gte=20" },
+    recent: { label: "RECENT", path: "/discover/movie", params: "&sort_by=primary_release_date.desc&vote_count.gte=30" }
+  };
+  var MOVIE_ORDER = ["theatres", "streaming", "recent"];
 
-import {
-  NewsData, state as D, LATEST, save,
-  wxInfo, timeAgo, LOCATIONS, TOPIC_DEFS, LEAGUES,
-  PIN_COUNTS, SPIN_COUNTS, dayOffsetYmd
-} from './news-data/index.js';
-
-const $ = id => document.getElementById(id);
-const esc = s => { const d=document.createElement('div'); d.textContent = s==null?'':String(s); return d.innerHTML; };
-const escAttr = s => esc(s).replace(/"/g,'&quot;');
-
-/* ── weather icons ── */
-const cloudHi = '<g fill="var(--ink-dim)"><circle cx="13" cy="14" r="5.5"/><circle cx="22" cy="14" r="6.5"/><circle cx="18" cy="10" r="5.5"/><rect x="10" y="14" width="16" height="5.5" rx="2.75"/></g>';
-function wxIcon(type){
-  const rays='<g stroke="var(--c-world)" stroke-width="2" stroke-linecap="round"><line x1="18" y1="2" x2="18" y2="7"/><line x1="18" y1="29" x2="18" y2="34"/><line x1="2" y1="18" x2="7" y2="18"/><line x1="29" y1="18" x2="34" y2="18"/><line x1="7" y1="7" x2="10.5" y2="10.5"/><line x1="25.5" y1="25.5" x2="29" y2="29"/><line x1="29" y1="7" x2="25.5" y2="10.5"/><line x1="10.5" y1="25.5" x2="7" y2="29"/></g>';
-  switch(type){
-    case 'sun': return `<svg viewBox="0 0 36 36">${rays}<circle cx="18" cy="18" r="6.5" fill="var(--c-world)"/></svg>`;
-    case 'partly': return `<svg viewBox="0 0 36 36"><circle cx="13" cy="13" r="6" fill="var(--c-world)"/><g fill="var(--ink-dim)"><circle cx="15" cy="22" r="5.5"/><circle cx="23" cy="22" r="6.5"/><circle cx="19" cy="18" r="5.5"/><rect x="12" y="22" width="15" height="5.5" rx="2.75"/></g></svg>`;
-    case 'cloud': return `<svg viewBox="0 0 36 36"><g fill="var(--ink-dim)"><circle cx="13" cy="19" r="6"/><circle cx="23" cy="19" r="7"/><circle cx="18" cy="14" r="6"/><rect x="9" y="19" width="18" height="6" rx="3"/></g></svg>`;
-    case 'rain': return `<svg viewBox="0 0 36 36">${cloudHi}<g stroke="var(--c-local)" stroke-width="2" stroke-linecap="round"><line x1="13" y1="23" x2="13" y2="27"/><line x1="18" y1="23" x2="18" y2="27"/><line x1="23" y1="23" x2="23" y2="27"/></g></svg>`;
-    case 'snow': return `<svg viewBox="0 0 36 36">${cloudHi}<g fill="var(--ink)"><circle cx="13" cy="24" r="1.7"/><circle cx="18" cy="24" r="1.7"/><circle cx="23" cy="24" r="1.7"/></g></svg>`;
-    default: return `<svg viewBox="0 0 36 36">${cloudHi}</svg>`;
+  // news-data/feeds.js
+  var gnewsSearch = (q) => `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-CA&gl=CA&ceid=CA:en`;
+  var bingNewsSearch = (q) => `https://www.bing.com/news/search?q=${encodeURIComponent(q)}&format=rss`;
+  function fetchT(url, ms = runtime.FETCH_TIMEOUT_MS) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
   }
-}
-
-/* ── accent + tag colour maps ── */
-const ACCENT = {world:'--c-world',canada:'--c-canada',local:'--c-local',tech:'--c-tech',business:'--c-biz',ai:'--c-ai',pinned:'--c-pin',sports:'--c-sports',ringer:'--c-ringer',hbr:'--c-hbr',entertainment:'--c-ent',games:'--c-games',reviews:'--c-review',markets:'--c-markets',scores:'--c-sports'};
-const tagColor = {world:'--c-world',canada:'--c-canada',local:'--c-local',tech:'--c-tech',biz:'--c-biz',ai:'--c-ai',pin:'--c-pin',sport:'--c-sports',sports:'--c-sports',ringer:'--c-ringer',ent:'--c-ent',games:'--c-games',review:'--c-review','biz-page':'--c-hbr'};
-
-/* ── sections / tabs (keys match data-layer topic keys) ── */
-const SECTIONS = {
-  news:    {label:'News',    tabs:[['world','World'],['canada','Canada'],['local','Local'],['tech','Tech'],['business','Business'],['ai','AI'],['pinned','Pinned'],['sports','Sports']]},
-  pages:   {label:'Pages',   tabs:[['ringer','The Ringer'],['hbr','HBR'],['entertainment','Variety'],['games','IGN'],['reviews','Movies']]},
-  markets: {label:'Markets', tabs:[['overview','Overview'],['indexes','Indexes'],['stocks','Stocks'],['crypto','Crypto'],['tsx','TSX'],['rates','Rates']]},
-  scores:  {label:'Scores',  tabs:[['all','All'],['NBA','NBA'],['NHL','NHL'],['MLB','MLB'],['NFL','NFL'],['EPL','EPL']]},
-};
-const NAV_ICONS = {
-  news:'<path d="M4 5h16v14H4z"/><path d="M7 9h6M7 12h10M7 15h10"/>',
-  pages:'<path d="M5 4h9l5 5v11H5z"/><path d="M14 4v5h5"/>',
-  markets:'<path d="M4 19V8m5 11V5m5 14v-8m5 8V10"/>',
-  scores:'<circle cx="12" cy="12" r="8"/><path d="M12 4v16M4 12h16M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
-};
-const SECTION_COLOR = {news:'--c-world',pages:'--c-ent',markets:'--c-markets',scores:'--c-sports'};
-
-/* ── UI state (separate from the data-layer store D) ── */
-const ui = { section:'news', tab:{news:0,pages:0,markets:0,scores:0},
-  pinFilter:{pinned:null,sports:null,stocks:null,tsx:null}, settingsSection:'news',
-  tabOrder:{}, tabHidden:{}, scoreDay:0, read:new Set(), loaded:false };
-const TAB_LABEL = {};
-for(const sec in SECTIONS){ ui.tabOrder[sec]=SECTIONS[sec].tabs.map(t=>t[0]); ui.tabHidden[sec]=new Set(); SECTIONS[sec].tabs.forEach(([k,l])=>{TAB_LABEL[k]=l;}); }
-function visTabs(sec){ return ui.tabOrder[sec].filter(k=>!ui.tabHidden[sec].has(k)).map(k=>[k,TAB_LABEL[k]]); }
-
-const news = new NewsData();
-
-/* ════ rendering ════ */
-function setAccent(v){ document.documentElement.style.setProperty('--accent', `var(${v})`); }
-
-function storyHTML(it, key){
-  const def = TOPIC_DEFS[key] || {};
-  const tag = it.tag || def.tag || 'world';
-  const tc = `var(${tagColor[tag]||'--c-world'})`;
-  const label = it.label || def.label || key;
-  const pop = it.pop>=2 ? `<span class="pop pop${Math.min(it.pop,5)}">\u{1F525}${it.pop}</span>` : '';
-  const fav = it.fav ? '<span class="star">\u2605</span> ' : '';
-  const src = it.srcLabel ? `<span class="src-pill">${esc(it.srcLabel)}</span>` : '';
-  let meter='';
-  if(it.rt!=null) meter=`<span class="tomato ${it.rt>=60?'fresh':'rotten'}">${it.rt>=60?'\u{1F345}':'\u{1F7E2}'} ${it.rt}%</span>`;
-  const meta = it.tmdb!=null ? `TMDB ${it.tmdb}` : (it.time?timeAgo(it.time):'');
-  const title = def.strip ? String(it.title).replace(def.strip,'') : it.title;
-  const readCls = ui.read.has(it.link)?' read':'';
-  const reviewCls = it.isReview?' review-accent':'';
-  return `<a class="story${reviewCls}${readCls}" href="${escAttr(it.link)}" target="_blank" rel="noopener" data-link="${escAttr(it.link)}">
-    <div class="s-top"><span class="s-tag" style="background:color-mix(in srgb, ${tc} 16%, transparent);color:${tc}">${fav}${esc(label)}</span>${src}${meter}${pop}<span class="s-meta">${meta}</span></div>
-    <div class="s-head">${esc(title)}</div></a>`;
-}
-function feedStories(items, key){
-  if(items && items.length) return `<div class="pane-inner">${items.map(i=>storyHTML(i,key)).join('')}</div>`;
-  return `<div class="pane-inner"><div class="empty">${ui.loaded?'No items':'Loading\u2026'}</div></div>`;
-}
-
-/* Sports tab = favourites (sportspin) + general sports news, deduped */
-function newsItems(key){
-  if(key==='sports'){
-    const seen=new Set(), out=[];
-    [...(LATEST.topics.sportspin||[]), ...(LATEST.topics.sports||[])].forEach(i=>{ if(i&&i.link&&!seen.has(i.link)){seen.add(i.link); out.push(i);} });
+  function feedLink(node) {
+    const links = [...node.querySelectorAll("link")];
+    for (const l of links) {
+      const h = l.getAttribute("href");
+      if (h) return h;
+    }
+    for (const l of links) {
+      const tx = (l.textContent || "").trim();
+      if (tx) return tx;
+    }
+    return "";
+  }
+  function defaultParseFeedXml(xml) {
+    if (typeof DOMParser === "undefined") {
+      throw new Error(
+        '[news-data] No XML parser available. On non-browser platforms set runtime.parseFeedXml to a function (xmlString) => Array<{title,link,time}>. See README "Porting to mobile".'
+      );
+    }
+    const doc = new DOMParser().parseFromString(xml, "text/xml");
+    if (doc.querySelector("parsererror")) return [];
+    let nodes = [...doc.querySelectorAll("item")];
+    if (!nodes.length) nodes = [...doc.querySelectorAll("entry")];
+    return nodes.map((n) => {
+      const g = (sel) => {
+        const e = n.querySelector(sel);
+        return e ? e.textContent.trim() : "";
+      };
+      const date = g("pubDate") || g("published") || g("updated") || g("date");
+      return { title: g("title"), link: feedLink(n), time: parseTimeLocal(date) };
+    }).filter((i) => i.title);
+  }
+  function parseFeedXml(xml) {
+    return (runtime.parseFeedXml || defaultParseFeedXml)(xml);
+  }
+  function parseTimeLocal(s) {
+    if (!s) return Date.now();
+    let t = Date.parse(s);
+    if (isNaN(t)) t = Date.parse(String(s).replace(" ", "T") + "Z");
+    return isNaN(t) ? Date.now() : t;
+  }
+  function cleanFeed(items) {
+    const seen = /* @__PURE__ */ new Set(), out = [];
+    for (const it of items) {
+      if (!it.title || !it.link) continue;
+      if (AD_PATTERNS.test(it.title)) continue;
+      const key = it.title.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(it);
+    }
+    out.sort((a, b) => b.time - a.time);
     return out;
   }
-  return LATEST.topics[key]||[];
-}
+  async function rss2json(feed) {
+    const key = runtime.RSS2JSON_KEY ? `&api_key=${runtime.RSS2JSON_KEY}&count=40` : "";
+    const d = await fetchT(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed)}${key}`).then((r) => r.json());
+    return (d.items || []).map((i) => ({ title: i.title, link: i.link, time: parseTimeLocal(i.pubDate) }));
+  }
+  async function getRss(feed) {
+    if (runtime.FEED_WORKER) {
+      try {
+        const r = await fetchT(runtime.FEED_WORKER.replace(/\/+$/, "") + "/?url=" + encodeURIComponent(feed));
+        if (r.ok) {
+          const items = parseFeedXml(await r.text());
+          if (items.length) return cleanFeed(items).slice(0, 40);
+        }
+      } catch {
+      }
+    }
+    if (runtime.RSS2JSON_KEY) {
+      try {
+        const items = await rss2json(feed);
+        if (items.length) return cleanFeed(items).slice(0, 40);
+      } catch {
+      }
+    }
+    for (const mk of runtime.FEED_PROXIES) {
+      try {
+        const r = await fetchT(mk(feed));
+        if (!r.ok) continue;
+        const items = parseFeedXml(await r.text());
+        if (items.length) return cleanFeed(items).slice(0, 40);
+      } catch {
+      }
+    }
+    try {
+      return cleanFeed(await rss2json(feed)).slice(0, 40);
+    } catch {
+    }
+    return [];
+  }
+  function caProxy(u) {
+    const base = runtime.FEED_WORKER ? runtime.FEED_WORKER.replace(/\/+$/, "") + "/?url=" : runtime.CA_PROXY;
+    return base + encodeURIComponent(u);
+  }
 
-function mkRow(o){
-  const chg=o.chg, cls=chg>=0?'up':'down', arr=chg>=0?'\u25B2':'\u25BC';
-  const chgTxt = (chg==null||isNaN(chg))?'':`${arr}${Math.abs(chg).toFixed(2)}%`;
-  const price = (o.price!=null&&!isNaN(o.price)) ? '$'+(o.price>=1?o.price.toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2}):o.price.toFixed(4)) : '\u2014';
-  return `<div class="mk-row"><div><div class="mk-sym">${esc(o.sym)}</div>${o.name?`<div class="mk-name">${esc(o.name)}</div>`:''}</div><div class="mk-price">${price}</div><div class="mk-chg ${cls}">${chgTxt}</div></div>`;
-}
-function marketsPane(key){
-  const E=LATEST.equities||{indexes:[],stocks:[]};
-  const groups={ indexes:['INDEXES',E.indexes||[]], stocks:['US STOCKS',E.stocks||[]], crypto:['CRYPTO',LATEST.crypto||[]], tsx:['TSX / CANADIAN',LATEST.caStocks||[]], rates:['CANADIAN RATES',LATEST.rates||[]] };
-  const show = key==='overview' ? ['indexes','stocks','crypto','tsx','rates'] : [key];
-  if(!ui.loaded) return `<div class="pane-inner"><div class="empty">Loading\u2026</div></div>`;
-  let html='<div class="pane-inner">';
-  show.forEach(k=>{
-    const title=groups[k][0]; let data=groups[k][1];
-    if(k==='rates'){
-      html += `<div class="mk-group">${title}</div>` + (data.length ? data.map(r=>`<div class="mk-row"><div class="mk-sym">${esc(r.label)}</div><div class="mk-rate-v">${r.value!=null?r.value.toFixed(2):'\u2014'}%</div></div>`).join('') : '<div class="empty">\u2014</div>');
+  // news-data/store.js
+  var LS_KEY = "newswall.state.v1";
+  var state = {
+    TOPICS_ON: [...DEFAULT_TOPICS_ON],
+    TOPIC_ORDER: [...DEFAULT_TOPIC_ORDER],
+    LIMITS: {},
+    // topicKey -> headline limit
+    MODES: {},
+    // topicKey -> 'all' | 'reviews'
+    MOVIE_FILTER: "theatres",
+    MOVIE_SEARCH_Q: "",
+    PINNED_TOPICS: ["Claude", "world cup"],
+    SPORTS_PINNED: ["MMA", "Blue Jays", "Raptors", "Steph Curry", "NBA Finals"],
+    SPORTS_TAB: "new",
+    // 'new' | 'pinned'
+    LOCATION_KEY: "vancouver",
+    STOCKS: [...DEFAULT_STOCKS],
+    CA_STOCKS: [...DEFAULT_CA_STOCKS],
+    activeDay: 0
+    // -1 yesterday · 0 today · +1 tomorrow
+  };
+  var PIN_COUNTS = {};
+  var SPIN_COUNTS = {};
+  var SPORTS_DIAG = { gn: {}, bing: {}, feeds: [] };
+  function setSportsDiag(d) {
+    SPORTS_DIAG = d;
+  }
+  var LATEST = {
+    games: [],
+    topics: {},
+    crypto: [],
+    caStocks: [],
+    rates: [],
+    equities: { keyMissing: !runtime.STOCK_API_KEY, indexes: [], stocks: [] }
+  };
+  var READ = /* @__PURE__ */ new Set();
+  var COLLAPSED = /* @__PURE__ */ new Set();
+  function adapter() {
+    if (runtime.storage) return runtime.storage;
+    if (typeof localStorage !== "undefined") return localStorage;
+    return null;
+  }
+  var saveTimer = null;
+  function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const a = adapter();
+      if (!a) return;
+      try {
+        const payload = JSON.stringify({
+          topicsOn: state.TOPICS_ON,
+          topicOrder: state.TOPIC_ORDER,
+          limits: state.LIMITS,
+          modes: state.MODES,
+          movieFilter: state.MOVIE_FILTER,
+          pinned: state.PINNED_TOPICS,
+          location: state.LOCATION_KEY,
+          sportspin: state.SPORTS_PINNED,
+          sportsTab: state.SPORTS_TAB,
+          collapsed: [...COLLAPSED],
+          stocks: state.STOCKS,
+          ca: state.CA_STOCKS,
+          read: [...READ].slice(-600),
+          activeDay: state.activeDay
+        });
+        Promise.resolve(a.setItem(LS_KEY, payload)).catch(() => {
+        });
+      } catch {
+      }
+    }, 200);
+  }
+  async function loadState() {
+    const a = adapter();
+    if (!a) return;
+    let raw;
+    try {
+      raw = await Promise.resolve(a.getItem(LS_KEY));
+    } catch {
       return;
     }
-    if((k==='stocks'||k==='tsx') && key===k && ui.pinFilter[k]) data=data.filter(o=>String(o.sym).replace(/\.TO$/,'').toUpperCase()===ui.pinFilter[k].toUpperCase());
-    html += `<div class="mk-group">${title}</div>` + (data.length ? data.map(mkRow).join('') : '<div class="empty">No data</div>');
-  });
-  return html+'</div>';
-}
+    if (!raw) return;
+    let d;
+    try {
+      d = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const known = Array.isArray(d.topicOrder) ? d.topicOrder.slice() : [];
+    if (Array.isArray(d.topicOrder)) state.TOPIC_ORDER = d.topicOrder.filter((k) => TOPIC_DEFS[k]);
+    Object.keys(TOPIC_DEFS).forEach((k) => {
+      if (!state.TOPIC_ORDER.includes(k)) state.TOPIC_ORDER.push(k);
+    });
+    if (Array.isArray(d.topicsOn)) state.TOPICS_ON = d.topicsOn.filter((k) => TOPIC_DEFS[k]);
+    Object.keys(TOPIC_DEFS).forEach((k) => {
+      if (!known.includes(k) && !state.TOPICS_ON.includes(k)) state.TOPICS_ON.push(k);
+    });
+    if (d.limits && typeof d.limits === "object") for (const k in d.limits) {
+      if (NEWS_STEPS.includes(d.limits[k])) state.LIMITS[k] = d.limits[k];
+    }
+    if (d.modes && typeof d.modes === "object") for (const k in d.modes) {
+      if (d.modes[k] === "reviews" || d.modes[k] === "all") state.MODES[k] = d.modes[k];
+    }
+    if (MOVIE_ORDER.includes(d.movieFilter)) state.MOVIE_FILTER = d.movieFilter;
+    if (Array.isArray(d.pinned)) state.PINNED_TOPICS = d.pinned.filter((t) => typeof t === "string" && t.trim()).slice(0, 12);
+    if (LOCATIONS.some((l) => l.key === d.location)) state.LOCATION_KEY = d.location;
+    if (Array.isArray(d.sportspin)) state.SPORTS_PINNED = d.sportspin.filter((t) => typeof t === "string" && t.trim()).slice(0, 12);
+    if (d.sportsTab === "new" || d.sportsTab === "pinned") state.SPORTS_TAB = d.sportsTab;
+    if (Array.isArray(d.read)) d.read.forEach((k) => {
+      if (typeof k === "string" && k) READ.add(k);
+    });
+    if (Array.isArray(d.collapsed)) d.collapsed.forEach((k) => COLLAPSED.add(k));
+    if (Array.isArray(d.stocks)) state.STOCKS = d.stocks;
+    if (Array.isArray(d.ca)) state.CA_STOCKS = d.ca;
+    if (typeof d.activeDay === "number") state.activeDay = d.activeDay;
+  }
 
-function scoresPane(filter){
-  const dayKey=dayOffsetYmd(ui.scoreDay);
-  let games=(LATEST.games||[]).filter(g=>g.day===dayKey);
-  if(filter!=='all') games=games.filter(g=>g.code===filter);
-  const dateBar=`<div class="sc-datebar">${['Yesterday','Today','Tomorrow'].map((d,i)=>`<div class="sc-date ${ui.scoreDay===i-1?'active':''}" data-day="${i-1}">${d}</div>`).join('')}</div>`;
-  if(!ui.loaded) return `<div class="pane-inner">${dateBar}<div class="empty">Loading\u2026</div></div>`;
-  if(!games.length) return `<div class="pane-inner">${dateBar}<div class="empty">No games this day</div></div>`;
-  const card=g=>{
-    const hs=+g.home.score||0, as=+g.away.score||0, show=g.state==='in'||g.state==='post';
-    const tag=g.link?'a':'div', attr=g.link?` href="${escAttr(g.link)}" target="_blank" rel="noopener"`:'';
-    return `<${tag} class="game ${g.state==='in'?'live':''}"${attr}>
-      <div class="g-row"><span class="g-abv">${esc(g.away.abv)}</span><span class="g-sc ${show&&as>hs?'win':''}">${show?esc(g.away.score):'\u2014'}</span></div>
-      <div class="g-row"><span class="g-abv">${esc(g.home.abv)}</span><span class="g-sc ${show&&hs>as?'win':''}">${show?esc(g.home.score):'\u2014'}</span></div>
-      <div class="g-status">${esc(g.code)} \u00B7 ${esc(g.status)}</div></${tag}>`;
+  // news-data/sports.js
+  function ymd(d) {
+    return "" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+  }
+  function dayOffsetYmd(off) {
+    const d = /* @__PURE__ */ new Date();
+    d.setDate(d.getDate() + off);
+    return ymd(d);
+  }
+  var ymdLocal = (iso) => ymd(new Date(iso));
+  var SCORE_DATES = `${dayOffsetYmd(-1)}-${dayOffsetYmd(1)}`;
+  async function getLeague(path, code) {
+    const data = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${SCORE_DATES}`).then((r) => r.json());
+    return (data.events || []).map((ev) => {
+      const c = ev.competitions[0].competitors;
+      const home = c.find((t) => t.homeAway === "home"), away = c.find((t) => t.homeAway === "away");
+      const link = (ev.links || []).find((l) => /summary|gamecast|recap/.test((l.rel || []).join(" ")))?.href || (ev.links || [])[0]?.href || null;
+      return {
+        code,
+        state: ev.status.type.state,
+        status: ev.status.type.shortDetail,
+        link,
+        day: ymdLocal(ev.date),
+        away: { abv: away.team.abbreviation, score: away.score, logo: away.team.logo },
+        home: { abv: home.team.abbreviation, score: home.score, logo: home.team.logo }
+      };
+    });
+  }
+  async function getAllScores() {
+    const res = await Promise.allSettled(LEAGUES.map(([p, c]) => getLeague(p, c)));
+    return res.filter((r) => r.status === "fulfilled").flatMap((r) => r.value);
+  }
+  async function getSportsNews() {
+    const items = await getRss(SPORTS_FEED);
+    return items.map((i) => ({ ...i, tag: "sport", label: "Sport" }));
+  }
+  function kwRegexes(kw) {
+    const esc2 = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const words = kw.trim().split(/\s+/);
+    const res = [new RegExp("\\b" + esc2(kw) + "\\b", "i")];
+    if (words.length > 1) {
+      const last = words[words.length - 1];
+      if (last.length >= 3) res.push(new RegExp("\\b" + esc2(last) + "\\b", "i"));
+    }
+    return res;
+  }
+  async function getSportsPinnedNews() {
+    if (!state.SPORTS_PINNED.length) {
+      Object.keys(SPIN_COUNTS).forEach((k) => delete SPIN_COUNTS[k]);
+      setSportsDiag({ gn: {}, bing: {}, feeds: [] });
+      return [];
+    }
+    const matchers = state.SPORTS_PINNED.map((kw) => [kw, kwRegexes(kw)]);
+    const firstKw = (title) => {
+      const t = title || "";
+      const m = matchers.find(([, res]) => res.some((re) => re.test(t)));
+      return m ? m[0] : null;
+    };
+    const now = Date.now();
+    const isFresh = (i) => i.time && now - i.time <= SPORTS_FRESH_MS;
+    const diag = { gn: {}, bing: {}, feeds: [] };
+    state.SPORTS_PINNED.forEach((kw) => {
+      diag.gn[kw] = 0;
+      diag.bing[kw] = 0;
+    });
+    const searchByKw = {};
+    await Promise.all(state.SPORTS_PINNED.map(async (kw) => {
+      const [g, b] = await Promise.all([
+        getRss(gnewsSearch(kw)).catch(() => []),
+        getRss(bingNewsSearch(kw)).catch(() => [])
+      ]);
+      diag.gn[kw] = g.length;
+      diag.bing[kw] = b.length;
+      searchByKw[kw] = [...g, ...b].map((i) => ({ ...i, tag: "pin", label: kw.toUpperCase(), kw }));
+    }));
+    const directByKw = {};
+    state.SPORTS_PINNED.forEach((kw) => {
+      directByKw[kw] = [];
+    });
+    await Promise.all(SPORTS_PIPE.map(async ([url, src]) => {
+      const items = await getRss(url).catch(() => []);
+      let matched = 0;
+      items.forEach((i) => {
+        const kw = firstKw(i.title);
+        if (kw) {
+          directByKw[kw].push({ ...i, tag: "pin", label: kw.toUpperCase(), kw, srcLabel: src });
+          matched++;
+        }
+      });
+      diag.feeds.push({ src, raw: items.length, matched });
+    }));
+    setSportsDiag(diag);
+    const out = [];
+    state.SPORTS_PINNED.forEach((kw) => {
+      const merged = cleanFeed([...searchByKw[kw] || [], ...directByKw[kw] || []]);
+      const freshOnes = merged.filter(isFresh);
+      const pick = (freshOnes.length ? freshOnes : merged).slice(0, SPORTS_PER_KW);
+      out.push(...pick);
+    });
+    const final = cleanFeed(out).slice(0, 40);
+    Object.keys(SPIN_COUNTS).forEach((k) => delete SPIN_COUNTS[k]);
+    state.SPORTS_PINNED.forEach((kw) => {
+      SPIN_COUNTS[kw] = 0;
+    });
+    final.forEach((i) => {
+      if (i.kw != null && SPIN_COUNTS[i.kw] != null) SPIN_COUNTS[i.kw]++;
+    });
+    return final;
+  }
+
+  // news-data/markets.js
+  async function finnhubQuote(symbol) {
+    const u = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${runtime.STOCK_API_KEY}`;
+    const d = await fetch(u).then((r) => r.json());
+    if (d.c == null || d.c === 0) return null;
+    return { price: d.c, chg: d.dp };
+  }
+  async function getEquities() {
+    if (!runtime.STOCK_API_KEY) return { keyMissing: true, indexes: [], stocks: [] };
+    const idx = await Promise.all(INDEXES.map(async ([sym, label]) => {
+      const q = await finnhubQuote(sym);
+      return q ? { sym: label, price: q.price, chg: q.chg } : null;
+    }));
+    const stk = await Promise.all(state.STOCKS.map(async (sym) => {
+      const q = await finnhubQuote(sym);
+      return q ? { sym, price: q.price, chg: q.chg } : null;
+    }));
+    return { keyMissing: false, indexes: idx.filter(Boolean), stocks: stk.filter(Boolean) };
+  }
+  async function getCrypto() {
+    const ids = "bitcoin,ethereum,solana,dogecoin";
+    const u = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`;
+    const d = await fetch(u).then((r) => r.json());
+    const map = { bitcoin: "BTC", ethereum: "ETH", solana: "SOL", dogecoin: "DOGE" };
+    return Object.entries(map).map(([id, sym]) => ({ sym, price: d[id]?.usd, chg: d[id]?.usd_24h_change })).filter((c) => c.price != null);
+  }
+  var caYahooSym = (sym) => /\.[A-Z]{1,2}$/i.test(sym) ? sym : sym + ".TO";
+  async function getCanadian() {
+    if (!state.CA_STOCKS.length) return [];
+    const out = [];
+    for (const sym of state.CA_STOCKS) {
+      let price = null, chg = null, err = null;
+      try {
+        const y = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(caYahooSym(sym))}`;
+        const d = await fetchT(caProxy(y)).then((r) => r.json());
+        const m = d?.chart?.result?.[0]?.meta;
+        if (m && m.regularMarketPrice != null) {
+          price = Number(m.regularMarketPrice);
+          const prev = m.chartPreviousClose ?? m.previousClose;
+          if (prev) chg = (price - prev) / prev * 100;
+        } else {
+          err = d?.chart?.error?.description || "no data";
+        }
+      } catch {
+        err = "feed/proxy unreachable";
+      }
+      out.push({ sym, price, chg, err });
+    }
+    return out;
+  }
+  async function valetLatest(series) {
+    try {
+      const u = `${VALET}${series}/json?recent=1`;
+      const d = await fetchT(caProxy(u)).then((r) => r.json());
+      const obs = d?.observations?.[d.observations.length - 1];
+      if (obs && obs[series] && obs[series].v != null) {
+        const n = parseFloat(obs[series].v);
+        if (!isNaN(n)) return { value: n, date: obs.d };
+      }
+    } catch {
+    }
+    return null;
+  }
+  async function getRates() {
+    return Promise.all(RATES.map(async (r) => {
+      const got = await valetLatest(r.series);
+      return { ...r, value: got ? got.value : r.fallback, date: got ? got.date : null, live: !!got };
+    }));
+  }
+
+  // news-data/weather.js
+  async function getWeatherFull(location) {
+    const { lat, lon } = location;
+    const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&hourly=temperature_2m,weather_code,precipitation_probability&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=4`;
+    const d = await fetch(u).then((r) => r.json());
+    const now = Date.now();
+    const hi = (d.hourly.time || []).findIndex((t) => new Date(t).getTime() >= now);
+    const start = hi < 0 ? 0 : hi;
+    const hourly = [];
+    for (let i = start; i < start + 6 && i < d.hourly.time.length; i++) {
+      hourly.push({ time: d.hourly.time[i], temp: d.hourly.temperature_2m[i], code: d.hourly.weather_code[i], pop: d.hourly.precipitation_probability[i] });
+    }
+    const daily = (d.daily.time || []).map((t, i) => ({ date: t, code: d.daily.weather_code[i], max: d.daily.temperature_2m_max[i], min: d.daily.temperature_2m_min[i] })).slice(0, 4);
+    return { current: d.current, hourly, daily };
+  }
+
+  // news-data/movies.js
+  function tmdbToItem(r, label) {
+    const year = (r.release_date || "").slice(0, 4);
+    return {
+      title: year ? `${r.title} (${year})` : r.title,
+      rawTitle: r.title,
+      link: `https://www.themoviedb.org/movie/${r.id}`,
+      time: r.release_date ? Date.parse(r.release_date) : 0,
+      movie: true,
+      isReview: true,
+      tag: "review",
+      label,
+      tmdb: r.vote_average > 0 ? r.vote_average.toFixed(1) : null
+    };
+  }
+  async function tmdbPage(f, page) {
+    const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    const u = `https://api.themoviedb.org/3${f.path}?api_key=${runtime.TMDB_API_KEY}&language=en-US&include_adult=false&page=${page}&primary_release_date.lte=${today}${f.params}`;
+    try {
+      const d = await fetch(u).then((r) => r.json());
+      return d.results || [];
+    } catch {
+      return [];
+    }
+  }
+  async function searchMovies(q) {
+    if (!runtime.TMDB_API_KEY || !q) return [];
+    try {
+      const u = `https://api.themoviedb.org/3/search/movie?api_key=${runtime.TMDB_API_KEY}&language=en-US&include_adult=false&query=${encodeURIComponent(q)}`;
+      const d = await fetch(u).then((r) => r.json());
+      return (d.results || []).map((r) => tmdbToItem(r, "SEARCH"));
+    } catch {
+      return [];
+    }
+  }
+  async function getMovieReviews() {
+    if (!runtime.TMDB_API_KEY) return [];
+    if (state.MOVIE_SEARCH_Q) return searchMovies(state.MOVIE_SEARCH_Q);
+    const f = MOVIE_FILTERS[state.MOVIE_FILTER] || MOVIE_FILTERS.theatres;
+    const pages = await Promise.all([1, 2, 3].map((p) => tmdbPage(f, p)));
+    const seen = /* @__PURE__ */ new Set(), out = [];
+    for (const r of pages.flat()) {
+      if (!r || !r.title || seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(tmdbToItem(r, f.label));
+    }
+    out.sort((a, b) => b.time - a.time);
+    return out.slice(0, 50);
+  }
+
+  // news-data/topics.js
+  async function getBusinessNews() {
+    const settled = await Promise.allSettled(BUSINESS_FEEDS.map(([url]) => getRss(url)));
+    const out = [];
+    settled.forEach((r, idx) => {
+      if (r.status !== "fulfilled") return;
+      const src = BUSINESS_FEEDS[idx][1];
+      r.value.forEach((i) => out.push({ ...i, tag: "biz", label: src }));
+    });
+    return cleanFeed(out).slice(0, 40);
+  }
+  async function getPinnedNews() {
+    if (!state.PINNED_TOPICS.length) {
+      Object.keys(PIN_COUNTS).forEach((k) => delete PIN_COUNTS[k]);
+      return [];
+    }
+    const settled = await Promise.allSettled(state.PINNED_TOPICS.map((t) => getRss(gnewsSearch(t))));
+    const out = [];
+    settled.forEach((r, idx) => {
+      if (r.status !== "fulfilled") return;
+      const kw = state.PINNED_TOPICS[idx];
+      r.value.forEach((i) => out.push({ ...i, tag: "pin", label: kw.toUpperCase(), kw }));
+    });
+    const final = cleanFeed(out).slice(0, 40);
+    Object.keys(PIN_COUNTS).forEach((k) => delete PIN_COUNTS[k]);
+    state.PINNED_TOPICS.forEach((kw) => {
+      PIN_COUNTS[kw] = 0;
+    });
+    final.forEach((i) => {
+      if (i.kw != null && PIN_COUNTS[i.kw] != null) PIN_COUNTS[i.kw]++;
+    });
+    return final;
+  }
+  function highlightReviews(items, def) {
+    const meter = !!(def && def.meter === "rt");
+    const isReview = (t) => /\breview\b/i.test(t || "");
+    const reviews = items.filter((i) => isReview(i.title)).map((i) => ({ ...i, tag: "review", label: "Review", isReview: true, meter }));
+    const rest = items.filter((i) => !isReview(i.title));
+    return [...reviews.slice(0, 6), ...rest];
+  }
+  var FETCHERS = { business: getBusinessNews, pinned: getPinnedNews, reviews: getMovieReviews };
+  var TRANSFORMS = { highlightReviews };
+  function kindOf(k) {
+    return TOPIC_DEFS[k] && TOPIC_DEFS[k].kind === "page" ? "page" : "news";
+  }
+  function orderedTopics() {
+    return state.TOPIC_ORDER.filter((k) => TOPIC_DEFS[k]);
+  }
+  function orderedByKind() {
+    const o = orderedTopics();
+    return [...o.filter((k) => kindOf(k) === "news"), ...o.filter((k) => kindOf(k) === "page")];
+  }
+  function visibleTopics() {
+    return orderedByKind().filter((k) => state.TOPICS_ON.includes(k));
+  }
+  async function fetchTopic(key) {
+    const def = TOPIC_DEFS[key];
+    if (!def) return [];
+    if (def.fetch) return (FETCHERS[def.fetch] || (() => []))();
+    let items = await getRss(def.feed);
+    if (def.extra && def.extra.length) {
+      const more = await Promise.allSettled(def.extra.map(([url]) => getRss(url)));
+      more.forEach((r, idx) => {
+        if (r.status === "fulfilled") r.value.forEach((i) => items.push({ ...i, srcLabel: def.extra[idx][1] }));
+      });
+      items = cleanFeed(items).slice(0, 40);
+    }
+    const tf = def.transform ? TRANSFORMS[def.transform] : null;
+    return tf ? tf(items, def) : items;
+  }
+  var cbcRegional = (loc) => `https://www.cbc.ca/webfeed/rss/rss-canada-${loc.cbc}`;
+  var globeRegional = (loc) => loc.globe ? `https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/canada/${loc.globe}/` : null;
+  function applyLocation(loc, exactLat, exactLon) {
+    const resolved = {
+      ...loc,
+      label: `${loc.code} \xB7 ${loc.city.toUpperCase()}`,
+      lat: exactLat ?? loc.lat,
+      lon: exactLon ?? loc.lon
+    };
+    const def = TOPIC_DEFS.local;
+    def.label = loc.code;
+    def.feed = cbcRegional(loc);
+    def.extra = globeRegional(loc) ? [[globeRegional(loc), "G&M"]] : [];
+    state.LOCATION_KEY = loc.key;
+    return resolved;
+  }
+  function locationByKey(key) {
+    return LOCATIONS.find((l) => l.key === key) || LOCATIONS[0];
+  }
+  function nearestLocation(lat, lon) {
+    let best = LOCATIONS[0], bestD = Infinity;
+    for (const l of LOCATIONS) {
+      const d = (l.lat - lat) ** 2 + (l.lon - lon) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = l;
+      }
+    }
+    return best;
+  }
+  var POP_STOP = /* @__PURE__ */ new Set(["the", "a", "an", "to", "of", "in", "on", "for", "and", "with", "as", "at", "by", "from", "its", "is", "are", "be", "this", "that", "after", "over", "into", "out", "says", "say", "will", "has", "have", "was", "were", "amid", "what", "how", "why", "who", "when", "their", "than", "but", "not", "his", "her", "they", "you", "your", "about", "more", "new", "first"]);
+  function popTokens(title) {
+    return new Set((title || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length >= 4 && !POP_STOP.has(w)));
+  }
+  function popSource(it) {
+    if (it.srcLabel) return String(it.srcLabel).toLowerCase();
+    if (it.label && /cnbc|yahoo|fortune|g&m/i.test(it.label)) return it.label.toLowerCase();
+    try {
+      return new URL(it.link).hostname.replace(/^www\./, "");
+    } catch {
+    }
+    return String(it.label || "?").toLowerCase();
+  }
+  function popularityPass(topics) {
+    const all = [];
+    for (const k in topics) {
+      for (const it of topics[k] || []) {
+        if (it && it.title) {
+          it.pop = 1;
+          all.push({ it, src: popSource(it), tok: popTokens(it.title) });
+        }
+      }
+    }
+    const n = all.length;
+    const parent = Array.from({ length: n }, (_, i) => i);
+    const find = (x) => {
+      while (parent[x] !== x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+      }
+      return x;
+    };
+    for (let i = 0; i < n; i++) {
+      const a = all[i].tok;
+      if (a.size < 2) continue;
+      for (let j = i + 1; j < n; j++) {
+        const b = all[j].tok;
+        if (b.size < 2) continue;
+        const sm = a.size < b.size ? a : b, lg = a.size < b.size ? b : a;
+        let shared = 0;
+        for (const t of sm) if (lg.has(t)) shared++;
+        if (shared >= 3 || shared >= 2 && shared / (a.size + b.size - shared) >= 0.5) parent[find(i)] = find(j);
+      }
+    }
+    const groups = {};
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      (groups[r] = groups[r] || []).push(i);
+    }
+    for (const r in groups) {
+      const idxs = groups[r];
+      const count = new Set(idxs.map((i) => all[i].src)).size;
+      idxs.forEach((i) => {
+        all[i].it.pop = count;
+      });
+    }
+  }
+
+  // news-data/format.js
+  function timeAgo(ms) {
+    const s = (Date.now() - ms) / 1e3;
+    if (s < 60) return Math.max(0, Math.floor(s)) + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    if (s < 86400) return Math.floor(s / 3600) + "h";
+    return Math.floor(s / 86400) + "d";
+  }
+  function wxInfo(code) {
+    if (code === 0) return { type: "sun", label: "CLEAR" };
+    if (code <= 2) return { type: "partly", label: "PARTLY" };
+    if (code === 3) return { type: "cloud", label: "CLOUDY" };
+    if (code <= 48) return { type: "fog", label: "FOG" };
+    if (code <= 57) return { type: "rain", label: "DRIZZLE" };
+    if (code <= 67) return { type: "rain", label: "RAIN" };
+    if (code <= 77) return { type: "snow", label: "SNOW" };
+    if (code <= 82) return { type: "rain", label: "SHOWERS" };
+    if (code <= 86) return { type: "snow", label: "SNOW" };
+    return { type: "thunder", label: "STORM" };
+  }
+
+  // news-data/index.js
+  var val = (s) => s.status === "fulfilled" ? s.value : null;
+  var NewsData = class {
+    constructor() {
+      this._listeners = /* @__PURE__ */ new Map();
+      this._timers = [];
+      this.location = applyLocation(locationByKey(state.LOCATION_KEY));
+    }
+    // ── tiny event bus ──
+    on(event, fn) {
+      (this._listeners.get(event) || this._listeners.set(event, /* @__PURE__ */ new Set()).get(event)).add(fn);
+      return () => this.off(event, fn);
+    }
+    off(event, fn) {
+      this._listeners.get(event)?.delete(fn);
+    }
+    _emit(event, payload) {
+      this._listeners.get(event)?.forEach((fn) => {
+        try {
+          fn(payload);
+        } catch (e) {
+          console.error(e);
+        }
+      });
+    }
+    // restore persisted prefs, re-point the local feed, then return self for chaining
+    async init() {
+      await loadState();
+      this.location = applyLocation(locationByKey(state.LOCATION_KEY));
+      return this;
+    }
+    // start periodic polling (returns a stop() fn). Does an immediate refresh.
+    start() {
+      this.refresh();
+      this.refreshCanadian();
+      this._timers.push(setInterval(() => this.refresh(), REFRESH_MS));
+      this._timers.push(setInterval(() => this.refreshCanadian(), CA_REFRESH_MS));
+      return () => this.stop();
+    }
+    stop() {
+      this._timers.forEach(clearInterval);
+      this._timers = [];
+    }
+    // main pull: scores, sports news, markets, weather, rates, then dynamic topics.
+    // Emits granular events ('scores','markets','weather','topics') + a final 'update'.
+    async refresh() {
+      this._emit("refresh:start");
+      const [sc, sn, cr, eq, wx, rt, sp] = await Promise.allSettled([
+        getAllScores(),
+        getSportsNews(),
+        getCrypto(),
+        getEquities(),
+        getWeatherFull(this.location),
+        getRates(),
+        getSportsPinnedNews()
+      ]);
+      if (val(sc) !== null) {
+        LATEST.games = val(sc);
+        this._emit("scores", LATEST.games);
+      }
+      if (val(sn) !== null) LATEST.topics.sports = val(sn);
+      if (val(sp) !== null) LATEST.topics.sportspin = val(sp);
+      if (val(rt) !== null) LATEST.rates = val(rt);
+      LATEST.crypto = val(cr) || [];
+      LATEST.equities = val(eq) || { keyMissing: !runtime.STOCK_API_KEY, indexes: [], stocks: [] };
+      this._emit("markets", { equities: LATEST.equities, crypto: LATEST.crypto, caStocks: LATEST.caStocks, rates: LATEST.rates });
+      const weather = val(wx);
+      if (weather) {
+        LATEST.weather = weather;
+        this._emit("weather", weather);
+      }
+      const keys = visibleTopics();
+      const tr = await Promise.allSettled(keys.map((k) => fetchTopic(k)));
+      tr.forEach((r, i) => {
+        if (r.status === "fulfilled") LATEST.topics[keys[i]] = r.value;
+      });
+      popularityPass(LATEST.topics);
+      this._emit("topics", { keys, topics: LATEST.topics });
+      LATEST.updatedAt = Date.now();
+      save();
+      this._emit("update", LATEST);
+      return LATEST;
+    }
+    // slower, separate cadence for the proxied TSX quotes (polite to the proxy)
+    async refreshCanadian() {
+      try {
+        const ca = await getCanadian();
+        LATEST.caStocks = ca;
+        this._emit("markets", { equities: LATEST.equities, crypto: LATEST.crypto, caStocks: ca, rates: LATEST.rates });
+        this._emit("update", LATEST);
+      } catch {
+      }
+      return LATEST.caStocks;
+    }
+    // ── location control (UI calls these; pass exact coords from device GPS) ──
+    setLocationByKey(key) {
+      this.location = applyLocation(locationByKey(key));
+      save();
+      return this.location;
+    }
+    setLocationByCoords(lat, lon) {
+      this.location = applyLocation(nearestLocation(lat, lon), lat, lon);
+      save();
+      return this.location;
+    }
   };
-  const live=games.filter(g=>g.state==='in'), rest=games.filter(g=>g.state!=='in');
-  let html=`<div class="pane-inner">${dateBar}`;
-  if(live.length) html+=`<div class="sc-lg live">\u25CF LIVE</div>`+live.map(card).join('');
-  if(rest.length) html+=`<div class="sc-lg">${filter==='all'?'GAMES':esc(filter)}</div>`+rest.map(card).join('');
-  return html+'</div>';
-}
 
-function paneContent(section,tabKey){
-  if(section==='news'||section==='pages'){
-    let items = section==='news' ? newsItems(tabKey) : (LATEST.topics[tabKey]||[]);
-    if(section==='news' && tabKey==='pinned' && ui.pinFilter.pinned) items=items.filter(i=>(i.label||'')===ui.pinFilter.pinned.toUpperCase());
-    if(section==='news' && tabKey==='sports' && ui.pinFilter.sports) items=items.filter(i=>(i.label||'')===ui.pinFilter.sports.toUpperCase());
-    return feedStories(items, tabKey);
+  // app.js
+  var $ = (id) => document.getElementById(id);
+  var esc = (s) => {
+    const d = document.createElement("div");
+    d.textContent = s == null ? "" : String(s);
+    return d.innerHTML;
+  };
+  var escAttr = (s) => esc(s).replace(/"/g, "&quot;");
+  var cloudHi = '<g fill="var(--ink-dim)"><circle cx="13" cy="14" r="5.5"/><circle cx="22" cy="14" r="6.5"/><circle cx="18" cy="10" r="5.5"/><rect x="10" y="14" width="16" height="5.5" rx="2.75"/></g>';
+  function wxIcon(type) {
+    const rays = '<g stroke="var(--c-world)" stroke-width="2" stroke-linecap="round"><line x1="18" y1="2" x2="18" y2="7"/><line x1="18" y1="29" x2="18" y2="34"/><line x1="2" y1="18" x2="7" y2="18"/><line x1="29" y1="18" x2="34" y2="18"/><line x1="7" y1="7" x2="10.5" y2="10.5"/><line x1="25.5" y1="25.5" x2="29" y2="29"/><line x1="29" y1="7" x2="25.5" y2="10.5"/><line x1="10.5" y1="25.5" x2="7" y2="29"/></g>';
+    switch (type) {
+      case "sun":
+        return `<svg viewBox="0 0 36 36">${rays}<circle cx="18" cy="18" r="6.5" fill="var(--c-world)"/></svg>`;
+      case "partly":
+        return `<svg viewBox="0 0 36 36"><circle cx="13" cy="13" r="6" fill="var(--c-world)"/><g fill="var(--ink-dim)"><circle cx="15" cy="22" r="5.5"/><circle cx="23" cy="22" r="6.5"/><circle cx="19" cy="18" r="5.5"/><rect x="12" y="22" width="15" height="5.5" rx="2.75"/></g></svg>`;
+      case "cloud":
+        return `<svg viewBox="0 0 36 36"><g fill="var(--ink-dim)"><circle cx="13" cy="19" r="6"/><circle cx="23" cy="19" r="7"/><circle cx="18" cy="14" r="6"/><rect x="9" y="19" width="18" height="6" rx="3"/></g></svg>`;
+      case "rain":
+        return `<svg viewBox="0 0 36 36">${cloudHi}<g stroke="var(--c-local)" stroke-width="2" stroke-linecap="round"><line x1="13" y1="23" x2="13" y2="27"/><line x1="18" y1="23" x2="18" y2="27"/><line x1="23" y1="23" x2="23" y2="27"/></g></svg>`;
+      case "snow":
+        return `<svg viewBox="0 0 36 36">${cloudHi}<g fill="var(--ink)"><circle cx="13" cy="24" r="1.7"/><circle cx="18" cy="24" r="1.7"/><circle cx="23" cy="24" r="1.7"/></g></svg>`;
+      default:
+        return `<svg viewBox="0 0 36 36">${cloudHi}</svg>`;
+    }
   }
-  if(section==='markets') return marketsPane(tabKey);
-  if(section==='scores')  return scoresPane(tabKey);
-  return '';
-}
-
-/* ════ strip + track ════ */
-function buildStrip(){
-  const tabs=visTabs(ui.section), idx=ui.tab[ui.section];
-  $('strip').innerHTML = tabs.map((t,i)=>`<div class="tab ${i===idx?'active':''}" data-i="${i}">${t[1]}<span class="ul"></span></div>`).join('');
-  const key=(tabs[idx]||[])[0];
-  setAccent(ACCENT[key]||ACCENT[ui.section]||'--c-world');
-}
-function buildTrack(){
-  const tabs=visTabs(ui.section);
-  $('track').innerHTML = tabs.map(t=>`<div class="pane">${paneContent(ui.section,t[0])}</div>`).join('');
-  positionTrack(false);
-}
-function positionTrack(animate){
-  const idx=ui.tab[ui.section], track=$('track');
-  track.style.transition = animate?'transform .26s cubic-bezier(.3,.9,.4,1)':'none';
-  track.style.transform = `translateX(${-idx*100}%)`;
-}
-function renderActivePane(){
-  const i=ui.tab[ui.section], panes=$('track').children, t=visTabs(ui.section)[i];
-  if(panes[i] && t) panes[i].innerHTML = paneContent(ui.section, t[0]);
-}
-function selectTab(i,animate=true){
-  const tabs=visTabs(ui.section);
-  i=Math.max(0,Math.min(tabs.length-1,i));
-  ui.tab[ui.section]=i;
-  buildStrip(); renderPinBar(); renderActivePane(); positionTrack(animate);
-  const el=$('strip').children[i]; if(el) el.scrollIntoView({inline:'center',block:'nearest',behavior:'smooth'});
-}
-function switchSection(sec){
-  ui.section=sec;
-  const vt=visTabs(sec); if(ui.tab[sec]>=vt.length) ui.tab[sec]=Math.max(0,vt.length-1);
-  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active', b.dataset.sec===sec));
-  buildStrip(); buildTrack(); renderPinBar();
-  document.querySelector(`.nav-btn[data-sec="${sec}"]`).style.setProperty('--nav-accent',`var(${SECTION_COLOR[sec]})`);
-}
-
-/* ════ nav ════ */
-$('nav').innerHTML = Object.entries(SECTIONS).map(([k,v])=>
-  `<div class="nav-btn ${k==='news'?'active':''}" data-sec="${k}" style="--nav-accent:var(${SECTION_COLOR[k]})">
+  var ACCENT = { world: "--c-world", canada: "--c-canada", local: "--c-local", tech: "--c-tech", business: "--c-biz", ai: "--c-ai", pinned: "--c-pin", sports: "--c-sports", ringer: "--c-ringer", hbr: "--c-hbr", entertainment: "--c-ent", games: "--c-games", reviews: "--c-review", markets: "--c-markets", scores: "--c-sports" };
+  var tagColor = { world: "--c-world", canada: "--c-canada", local: "--c-local", tech: "--c-tech", biz: "--c-biz", ai: "--c-ai", pin: "--c-pin", sport: "--c-sports", sports: "--c-sports", ringer: "--c-ringer", ent: "--c-ent", games: "--c-games", review: "--c-review", "biz-page": "--c-hbr" };
+  var SECTIONS = {
+    news: { label: "News", tabs: [["world", "World"], ["canada", "Canada"], ["local", "Local"], ["tech", "Tech"], ["business", "Business"], ["ai", "AI"], ["pinned", "Pinned"], ["sports", "Sports"]] },
+    pages: { label: "Pages", tabs: [["ringer", "The Ringer"], ["hbr", "HBR"], ["entertainment", "Variety"], ["games", "IGN"], ["reviews", "Movies"]] },
+    markets: { label: "Markets", tabs: [["overview", "Overview"], ["indexes", "Indexes"], ["stocks", "Stocks"], ["crypto", "Crypto"], ["tsx", "TSX"], ["rates", "Rates"]] },
+    scores: { label: "Scores", tabs: [["all", "All"], ["NBA", "NBA"], ["NHL", "NHL"], ["MLB", "MLB"], ["NFL", "NFL"], ["EPL", "EPL"]] }
+  };
+  var NAV_ICONS = {
+    news: '<path d="M4 5h16v14H4z"/><path d="M7 9h6M7 12h10M7 15h10"/>',
+    pages: '<path d="M5 4h9l5 5v11H5z"/><path d="M14 4v5h5"/>',
+    markets: '<path d="M4 19V8m5 11V5m5 14v-8m5 8V10"/>',
+    scores: '<circle cx="12" cy="12" r="8"/><path d="M12 4v16M4 12h16M6.5 6.5l11 11M17.5 6.5l-11 11"/>'
+  };
+  var SECTION_COLOR = { news: "--c-world", pages: "--c-ent", markets: "--c-markets", scores: "--c-sports" };
+  var ui = {
+    section: "news",
+    tab: { news: 0, pages: 0, markets: 0, scores: 0 },
+    pinFilter: { pinned: null, sports: null, stocks: null, tsx: null },
+    settingsSection: "news",
+    tabOrder: {},
+    tabHidden: {},
+    scoreDay: 0,
+    read: /* @__PURE__ */ new Set(),
+    loaded: false
+  };
+  var TAB_LABEL = {};
+  for (const sec in SECTIONS) {
+    ui.tabOrder[sec] = SECTIONS[sec].tabs.map((t) => t[0]);
+    ui.tabHidden[sec] = /* @__PURE__ */ new Set();
+    SECTIONS[sec].tabs.forEach(([k, l]) => {
+      TAB_LABEL[k] = l;
+    });
+  }
+  function visTabs(sec) {
+    return ui.tabOrder[sec].filter((k) => !ui.tabHidden[sec].has(k)).map((k) => [k, TAB_LABEL[k]]);
+  }
+  var news = new NewsData();
+  function setAccent(v) {
+    document.documentElement.style.setProperty("--accent", `var(${v})`);
+  }
+  function storyHTML(it, key) {
+    const def = TOPIC_DEFS[key] || {};
+    const tag = it.tag || def.tag || "world";
+    const tc = `var(${tagColor[tag] || "--c-world"})`;
+    const label = it.label || def.label || key;
+    const pop = it.pop >= 2 ? `<span class="pop pop${Math.min(it.pop, 5)}">\u{1F525}${it.pop}</span>` : "";
+    const fav = it.fav ? '<span class="star">\u2605</span> ' : "";
+    const src = it.srcLabel ? `<span class="src-pill">${esc(it.srcLabel)}</span>` : "";
+    let meter = "";
+    if (it.rt != null) meter = `<span class="tomato ${it.rt >= 60 ? "fresh" : "rotten"}">${it.rt >= 60 ? "\u{1F345}" : "\u{1F7E2}"} ${it.rt}%</span>`;
+    const meta = it.tmdb != null ? `TMDB ${it.tmdb}` : it.time ? timeAgo(it.time) : "";
+    const title = def.strip ? String(it.title).replace(def.strip, "") : it.title;
+    const readCls = ui.read.has(it.link) ? " read" : "";
+    const reviewCls = it.isReview ? " review-accent" : "";
+    return `<a class="story${reviewCls}${readCls}" href="${escAttr(it.link)}" target="_blank" rel="noopener" data-link="${escAttr(it.link)}">
+    <div class="s-top"><span class="s-tag" style="background:color-mix(in srgb, ${tc} 16%, transparent);color:${tc}">${fav}${esc(label)}</span>${src}${meter}${pop}<span class="s-meta">${meta}</span></div>
+    <div class="s-head">${esc(title)}</div></a>`;
+  }
+  function feedStories(items, key) {
+    if (items && items.length) return `<div class="pane-inner">${items.map((i) => storyHTML(i, key)).join("")}</div>`;
+    return `<div class="pane-inner"><div class="empty">${ui.loaded ? "No items" : "Loading\u2026"}</div></div>`;
+  }
+  function newsItems(key) {
+    if (key === "sports") {
+      const seen = /* @__PURE__ */ new Set(), out = [];
+      [...LATEST.topics.sportspin || [], ...LATEST.topics.sports || []].forEach((i) => {
+        if (i && i.link && !seen.has(i.link)) {
+          seen.add(i.link);
+          out.push(i);
+        }
+      });
+      return out;
+    }
+    return LATEST.topics[key] || [];
+  }
+  function mkRow(o) {
+    const chg = o.chg, cls = chg >= 0 ? "up" : "down", arr = chg >= 0 ? "\u25B2" : "\u25BC";
+    const chgTxt = chg == null || isNaN(chg) ? "" : `${arr}${Math.abs(chg).toFixed(2)}%`;
+    const price = o.price != null && !isNaN(o.price) ? "$" + (o.price >= 1 ? o.price.toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : o.price.toFixed(4)) : "\u2014";
+    return `<div class="mk-row"><div><div class="mk-sym">${esc(o.sym)}</div>${o.name ? `<div class="mk-name">${esc(o.name)}</div>` : ""}</div><div class="mk-price">${price}</div><div class="mk-chg ${cls}">${chgTxt}</div></div>`;
+  }
+  function marketsPane(key) {
+    const E = LATEST.equities || { indexes: [], stocks: [] };
+    const groups = { indexes: ["INDEXES", E.indexes || []], stocks: ["US STOCKS", E.stocks || []], crypto: ["CRYPTO", LATEST.crypto || []], tsx: ["TSX / CANADIAN", LATEST.caStocks || []], rates: ["CANADIAN RATES", LATEST.rates || []] };
+    const show = key === "overview" ? ["indexes", "stocks", "crypto", "tsx", "rates"] : [key];
+    if (!ui.loaded) return `<div class="pane-inner"><div class="empty">Loading\u2026</div></div>`;
+    let html = '<div class="pane-inner">';
+    show.forEach((k) => {
+      const title = groups[k][0];
+      let data = groups[k][1];
+      if (k === "rates") {
+        html += `<div class="mk-group">${title}</div>` + (data.length ? data.map((r) => `<div class="mk-row"><div class="mk-sym">${esc(r.label)}</div><div class="mk-rate-v">${r.value != null ? r.value.toFixed(2) : "\u2014"}%</div></div>`).join("") : '<div class="empty">\u2014</div>');
+        return;
+      }
+      if ((k === "stocks" || k === "tsx") && key === k && ui.pinFilter[k]) data = data.filter((o) => String(o.sym).replace(/\.TO$/, "").toUpperCase() === ui.pinFilter[k].toUpperCase());
+      html += `<div class="mk-group">${title}</div>` + (data.length ? data.map(mkRow).join("") : '<div class="empty">No data</div>');
+    });
+    return html + "</div>";
+  }
+  function scoresPane(filter) {
+    const dayKey = dayOffsetYmd(ui.scoreDay);
+    let games = (LATEST.games || []).filter((g) => g.day === dayKey);
+    if (filter !== "all") games = games.filter((g) => g.code === filter);
+    const dateBar = `<div class="sc-datebar">${["Yesterday", "Today", "Tomorrow"].map((d, i) => `<div class="sc-date ${ui.scoreDay === i - 1 ? "active" : ""}" data-day="${i - 1}">${d}</div>`).join("")}</div>`;
+    if (!ui.loaded) return `<div class="pane-inner">${dateBar}<div class="empty">Loading\u2026</div></div>`;
+    if (!games.length) return `<div class="pane-inner">${dateBar}<div class="empty">No games this day</div></div>`;
+    const card = (g) => {
+      const hs = +g.home.score || 0, as = +g.away.score || 0, show = g.state === "in" || g.state === "post";
+      const tag = g.link ? "a" : "div", attr = g.link ? ` href="${escAttr(g.link)}" target="_blank" rel="noopener"` : "";
+      return `<${tag} class="game ${g.state === "in" ? "live" : ""}"${attr}>
+      <div class="g-row"><span class="g-abv">${esc(g.away.abv)}</span><span class="g-sc ${show && as > hs ? "win" : ""}">${show ? esc(g.away.score) : "\u2014"}</span></div>
+      <div class="g-row"><span class="g-abv">${esc(g.home.abv)}</span><span class="g-sc ${show && hs > as ? "win" : ""}">${show ? esc(g.home.score) : "\u2014"}</span></div>
+      <div class="g-status">${esc(g.code)} \xB7 ${esc(g.status)}</div></${tag}>`;
+    };
+    const live = games.filter((g) => g.state === "in"), rest = games.filter((g) => g.state !== "in");
+    let html = `<div class="pane-inner">${dateBar}`;
+    if (live.length) html += `<div class="sc-lg live">\u25CF LIVE</div>` + live.map(card).join("");
+    if (rest.length) html += `<div class="sc-lg">${filter === "all" ? "GAMES" : esc(filter)}</div>` + rest.map(card).join("");
+    return html + "</div>";
+  }
+  function paneContent(section, tabKey) {
+    if (section === "news" || section === "pages") {
+      let items = section === "news" ? newsItems(tabKey) : LATEST.topics[tabKey] || [];
+      if (section === "news" && tabKey === "pinned" && ui.pinFilter.pinned) items = items.filter((i) => (i.label || "") === ui.pinFilter.pinned.toUpperCase());
+      if (section === "news" && tabKey === "sports" && ui.pinFilter.sports) items = items.filter((i) => (i.label || "") === ui.pinFilter.sports.toUpperCase());
+      return feedStories(items, tabKey);
+    }
+    if (section === "markets") return marketsPane(tabKey);
+    if (section === "scores") return scoresPane(tabKey);
+    return "";
+  }
+  function buildStrip() {
+    const tabs = visTabs(ui.section), idx = ui.tab[ui.section];
+    $("strip").innerHTML = tabs.map((t, i) => `<div class="tab ${i === idx ? "active" : ""}" data-i="${i}">${t[1]}<span class="ul"></span></div>`).join("");
+    const key = (tabs[idx] || [])[0];
+    setAccent(ACCENT[key] || ACCENT[ui.section] || "--c-world");
+  }
+  function buildTrack() {
+    const tabs = visTabs(ui.section);
+    $("track").innerHTML = tabs.map((t) => `<div class="pane">${paneContent(ui.section, t[0])}</div>`).join("");
+    positionTrack(false);
+  }
+  function positionTrack(animate) {
+    const idx = ui.tab[ui.section], track = $("track");
+    track.style.transition = animate ? "transform .26s cubic-bezier(.3,.9,.4,1)" : "none";
+    track.style.transform = `translateX(${-idx * 100}%)`;
+  }
+  function renderActivePane() {
+    const i = ui.tab[ui.section], panes = $("track").children, t = visTabs(ui.section)[i];
+    if (panes[i] && t) panes[i].innerHTML = paneContent(ui.section, t[0]);
+  }
+  function selectTab(i, animate = true) {
+    const tabs = visTabs(ui.section);
+    i = Math.max(0, Math.min(tabs.length - 1, i));
+    ui.tab[ui.section] = i;
+    buildStrip();
+    renderPinBar();
+    renderActivePane();
+    positionTrack(animate);
+    const el = $("strip").children[i];
+    if (el) el.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+  }
+  function switchSection(sec) {
+    ui.section = sec;
+    const vt = visTabs(sec);
+    if (ui.tab[sec] >= vt.length) ui.tab[sec] = Math.max(0, vt.length - 1);
+    document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.sec === sec));
+    buildStrip();
+    buildTrack();
+    renderPinBar();
+    document.querySelector(`.nav-btn[data-sec="${sec}"]`).style.setProperty("--nav-accent", `var(${SECTION_COLOR[sec]})`);
+  }
+  $("nav").innerHTML = Object.entries(SECTIONS).map(([k, v]) => `<div class="nav-btn ${k === "news" ? "active" : ""}" data-sec="${k}" style="--nav-accent:var(${SECTION_COLOR[k]})">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${NAV_ICONS[k]}</svg>
-    <span class="lbl">${v.label.toUpperCase()}</span></div>`).join('');
-$('nav').addEventListener('click',e=>{const b=e.target.closest('.nav-btn'); if(b) switchSection(b.dataset.sec);});
-$('strip').addEventListener('click',e=>{const t=e.target.closest('.tab'); if(t) selectTab(+t.dataset.i);});
-
-/* ════ story open (real links) + read mark + score dates ════ */
-$('track').addEventListener('click',e=>{
-  const sd=e.target.closest('.sc-date'); if(sd){ e.preventDefault(); ui.scoreDay=+sd.dataset.day; renderActivePane(); return; }
-  const a=e.target.closest('a.story'); if(a){ const link=a.dataset.link; if(link){ ui.read.add(link); D.READ.add(link); save(); a.classList.add('read'); } }
-});
-
-/* ════ horizontal swipe between topics ════ */
-(function(){
-  const vp=$('viewport'), track=$('track');
-  let startX=0,startY=0,dragging=false,decided=false,horiz=false,basePct=0,w=0;
-  vp.addEventListener('pointerdown',e=>{
-    if(e.target.closest('.sc-datebar')) return;
-    dragging=true; decided=false; horiz=false;
-    startX=e.clientX; startY=e.clientY; w=vp.clientWidth;
-    basePct=-ui.tab[ui.section]*100; track.style.transition='none';
+    <span class="lbl">${v.label.toUpperCase()}</span></div>`).join("");
+  $("nav").addEventListener("click", (e) => {
+    const b = e.target.closest(".nav-btn");
+    if (b) switchSection(b.dataset.sec);
   });
-  vp.addEventListener('pointermove',e=>{
-    if(!dragging) return;
-    const dx=e.clientX-startX, dy=e.clientY-startY;
-    if(!decided){ if(Math.abs(dx)>8||Math.abs(dy)>8){ decided=true; horiz=Math.abs(dx)>Math.abs(dy); } else return; }
-    if(!horiz) return; e.preventDefault();
-    const n=visTabs(ui.section).length, idx=ui.tab[ui.section];
-    let pct=basePct+(dx/w)*100;
-    if(idx===0 && dx>0) pct=basePct+(dx/w)*40;
-    if(idx===n-1 && dx<0) pct=basePct+(dx/w)*40;
-    track.style.transform=`translateX(${pct}%)`;
+  $("strip").addEventListener("click", (e) => {
+    const t = e.target.closest(".tab");
+    if (t) selectTab(+t.dataset.i);
   });
-  function end(e){
-    if(!dragging) return; dragging=false;
-    if(!horiz) return;
-    const dx=e.clientX-startX, idx=ui.tab[ui.section];
-    if(dx<-50) selectTab(idx+1); else if(dx>50) selectTab(idx-1); else positionTrack(true);
+  $("track").addEventListener("click", (e) => {
+    const sd = e.target.closest(".sc-date");
+    if (sd) {
+      e.preventDefault();
+      ui.scoreDay = +sd.dataset.day;
+      renderActivePane();
+      return;
+    }
+    const a = e.target.closest("a.story");
+    if (a) {
+      const link = a.dataset.link;
+      if (link) {
+        ui.read.add(link);
+        state.READ.add(link);
+        save();
+        a.classList.add("read");
+      }
+    }
+  });
+  (function() {
+    const vp = $("viewport"), track = $("track");
+    let startX = 0, startY = 0, dragging = false, decided = false, horiz = false, basePct = 0, w = 0;
+    vp.addEventListener("pointerdown", (e) => {
+      if (e.target.closest(".sc-datebar")) return;
+      dragging = true;
+      decided = false;
+      horiz = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      w = vp.clientWidth;
+      basePct = -ui.tab[ui.section] * 100;
+      track.style.transition = "none";
+    });
+    vp.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      if (!decided) {
+        if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+          decided = true;
+          horiz = Math.abs(dx) > Math.abs(dy);
+        } else return;
+      }
+      if (!horiz) return;
+      e.preventDefault();
+      const n = visTabs(ui.section).length, idx = ui.tab[ui.section];
+      let pct = basePct + dx / w * 100;
+      if (idx === 0 && dx > 0) pct = basePct + dx / w * 40;
+      if (idx === n - 1 && dx < 0) pct = basePct + dx / w * 40;
+      track.style.transform = `translateX(${pct}%)`;
+    });
+    function end(e) {
+      if (!dragging) return;
+      dragging = false;
+      if (!horiz) return;
+      const dx = e.clientX - startX, idx = ui.tab[ui.section];
+      if (dx < -50) selectTab(idx + 1);
+      else if (dx > 50) selectTab(idx - 1);
+      else positionTrack(true);
+    }
+    vp.addEventListener("pointerup", end);
+    vp.addEventListener("pointercancel", end);
+    vp.addEventListener("pointerleave", (e) => {
+      if (dragging) end(e);
+    });
+  })();
+  var PINCFG = {
+    pinned: { count: true, star: false, title: "ADD PINNED TOPIC", word: "TOPIC", ph: "Topic or keyword \u2014 e.g. elections", hint: "Becomes a live news search across sources.", kind: "kw" },
+    sports: { count: true, star: true, title: "ADD FAVOURITE", word: "FAVOURITE", ph: "Team, fighter or player", hint: "Followed across every sports feed.", kind: "kw" },
+    stocks: { count: false, star: false, title: "ADD US TICKER", word: "TICKER", ph: "e.g. AMZN", hint: "Any US-listed symbol (Finnhub).", kind: "ticker" },
+    tsx: { count: false, star: false, title: "ADD TSX TICKER", word: "TICKER", ph: "e.g. ENB", hint: ".TO is appended automatically.", kind: "ticker" }
+  };
+  function pinCtx() {
+    const t = visTabs(ui.section)[ui.tab[ui.section]];
+    const key = t ? t[0] : null;
+    if (ui.section === "news" && key === "pinned") return "pinned";
+    if (ui.section === "news" && key === "sports") return "sports";
+    if (ui.section === "markets" && key === "stocks") return "stocks";
+    if (ui.section === "markets" && key === "tsx") return "tsx";
+    return null;
   }
-  vp.addEventListener('pointerup',end);
-  vp.addEventListener('pointercancel',end);
-  vp.addEventListener('pointerleave',e=>{if(dragging)end(e);});
-})();
-
-/* ════ pin bar ════ */
-const PINCFG = {
-  pinned:{count:true,star:false,title:'ADD PINNED TOPIC',word:'TOPIC',ph:'Topic or keyword \u2014 e.g. elections',hint:'Becomes a live news search across sources.',kind:'kw'},
-  sports:{count:true,star:true,title:'ADD FAVOURITE',word:'FAVOURITE',ph:'Team, fighter or player',hint:'Followed across every sports feed.',kind:'kw'},
-  stocks:{count:false,star:false,title:'ADD US TICKER',word:'TICKER',ph:'e.g. AMZN',hint:'Any US-listed symbol (Finnhub).',kind:'ticker'},
-  tsx:{count:false,star:false,title:'ADD TSX TICKER',word:'TICKER',ph:'e.g. ENB',hint:'.TO is appended automatically.',kind:'ticker'},
-};
-function pinCtx(){
-  const t=visTabs(ui.section)[ui.tab[ui.section]]; const key=t?t[0]:null;
-  if(ui.section==='news'    && key==='pinned') return 'pinned';
-  if(ui.section==='news'    && key==='sports') return 'sports';
-  if(ui.section==='markets' && key==='stocks') return 'stocks';
-  if(ui.section==='markets' && key==='tsx')    return 'tsx';
-  return null;
-}
-function pinList(ctx){ return ctx==='pinned'?D.PINNED_TOPICS : ctx==='sports'?D.SPORTS_PINNED : ctx==='stocks'?D.STOCKS : ctx==='tsx'?D.CA_STOCKS : []; }
-function pinCount(ctx,v){ if(ctx==='pinned') return PIN_COUNTS[v]||0; if(ctx==='sports') return SPIN_COUNTS[v]||0; return 0; }
-function renderPinBar(){
-  const ctx=pinCtx(), wrap=$('pinbarWrap');
-  if(!ctx){ wrap.classList.remove('show'); return; }
-  const cfg=PINCFG[ctx];
-  const pills=pinList(ctx).map(v=>{
-    const cnt = cfg.count ? `<span class="cnt">${pinCount(ctx,v)}</span>` : '';
-    const star = cfg.star ? '<span class="star">\u2605</span>' : '';
-    const label = cfg.kind==='ticker' ? v.toUpperCase()+(ctx==='tsx'?'.TO':'') : v;
-    const on = ui.pinFilter[ctx]===v ? ' on' : '';
-    return `<span class="pin-pill${on}" data-pin="${escAttr(v)}">${star}${esc(label)}${cnt}<span class="pin-x" data-rm="${escAttr(v)}">\u00D7</span></span>`;
-  }).join('');
-  wrap.querySelector('.pinbar').innerHTML = pills + `<span class="pin-add">+ ${cfg.word}</span>`;
-  wrap.classList.add('show');
-}
-$('pinbarWrap').addEventListener('click',e=>{
-  const rm=e.target.closest('.pin-x'); if(rm){ removePin(pinCtx(), rm.dataset.rm); return; }
-  if(e.target.closest('.pin-add')){ openAddSheet(pinCtx()); return; }
-  const pill=e.target.closest('.pin-pill'); if(pill){ toggleFilter(pinCtx(), pill.dataset.pin); }
-});
-function toggleFilter(ctx,val){ if(!ctx) return; ui.pinFilter[ctx] = ui.pinFilter[ctx]===val?null:val; renderActivePane(); renderPinBar(); }
-function removePin(ctx,val){
-  const list=pinList(ctx), i=list.findIndex(x=>x===val);
-  if(i>=0) list.splice(i,1);
-  if(ui.pinFilter[ctx]===val) ui.pinFilter[ctx]=null;
-  renderPinBar(); renderActivePane(); scheduleRefresh();
-}
-let addCtx=null;
-function openAddSheet(ctx){
-  addCtx=ctx; const cfg=PINCFG[ctx];
-  $('addTitle').textContent=cfg.title; $('pinInput').placeholder=cfg.ph; $('addHint').textContent=cfg.hint; $('pinInput').value='';
-  openSheet('addSheet'); setTimeout(()=>$('pinInput').focus(),260);
-}
-function addPin(){
-  if(!addCtx) return; const cfg=PINCFG[addCtx];
-  let v=$('pinInput').value.trim(); if(!v){ closeSheets(); return; }
-  if(cfg.kind==='ticker') v=v.toUpperCase().replace(/\.TO$/,'');
-  const list=pinList(addCtx);
-  if(!list.some(x=>x.toLowerCase()===v.toLowerCase())) list.push(v);
-  closeSheets(); renderPinBar(); renderActivePane(); scheduleRefresh();
-}
-$('addBtn').addEventListener('click',addPin);
-$('pinInput').addEventListener('keydown',e=>{ if(e.key==='Enter') addPin(); });
-
-let refreshTimer=null;
-function scheduleRefresh(){ clearTimeout(refreshTimer); refreshTimer=setTimeout(()=>news.refresh(),350); }
-
-/* ════ settings: per-page reorder + remove ════ */
-function openSettings(){ ui.settingsSection=ui.section; renderSettings(); openSheet('setSheet'); }
-function renderSettings(){
-  const sec=ui.settingsSection;
-  $('setSheet').style.setProperty('--accent', `var(${SECTION_COLOR[sec]})`);
-  $('setSeg').innerHTML = Object.keys(SECTIONS).map(s=>`<button class="${s===sec?'active':''}" data-sec="${s}">${SECTIONS[s].label}</button>`).join('');
-  const order=ui.tabOrder[sec], hidden=ui.tabHidden[sec];
-  const visCount=order.filter(k=>!hidden.has(k)).length;
-  $('setList').innerHTML = order.map((k,i)=>{
-    const off=hidden.has(k), lock=(!off&&visCount<=1)?' lock':'';
-    return `<div class="set-row${off?' off':''}" data-key="${k}">
-      <span class="set-num">${i+1}</span><span class="set-label">${TAB_LABEL[k]}</span>
-      <span class="set-mv"><button data-mv="up" ${i===0?'disabled':''}>\u25B2</button><button data-mv="down" ${i===order.length-1?'disabled':''}>\u25BC</button></span>
-      <span class="set-toggle ${off?'':'on'}${lock}" data-vis><b></b></span></div>`;
-  }).join('');
-}
-$('setSeg').addEventListener('click',e=>{const b=e.target.closest('button'); if(b){ ui.settingsSection=b.dataset.sec; renderSettings(); }});
-$('setList').addEventListener('click',e=>{
-  const row=e.target.closest('.set-row'); if(!row) return;
-  const sec=ui.settingsSection, key=row.dataset.key;
-  const mv=e.target.closest('[data-mv]'); if(mv){ moveTab(sec,key,mv.dataset.mv); return; }
-  if(e.target.closest('[data-vis]')) toggleHidden(sec,key);
-});
-$('setAdd').addEventListener('click',()=>flashHint('custom feeds \u2014 coming soon'));
-function curKey(sec){ const t=visTabs(sec)[ui.tab[sec]]; return t?t[0]:null; }
-function resync(sec, keepKey){
-  const vis=visTabs(sec);
-  let idx = keepKey!=null ? vis.findIndex(t=>t[0]===keepKey) : -1;
-  if(idx<0) idx = Math.min(ui.tab[sec], vis.length-1);
-  ui.tab[sec]=Math.max(0,idx);
-  if(sec===ui.section){ buildStrip(); buildTrack(); renderPinBar(); }
-}
-function moveTab(sec,key,dir){
-  const arr=ui.tabOrder[sec], i=arr.indexOf(key), j=dir==='up'?i-1:i+1;
-  if(j<0||j>=arr.length) return;
-  const keep=sec===ui.section?curKey(sec):null;
-  [arr[i],arr[j]]=[arr[j],arr[i]];
-  resync(sec,keep); renderSettings();
-}
-function toggleHidden(sec,key){
-  const hidden=ui.tabHidden[sec], keep=sec===ui.section?curKey(sec):null;
-  if(hidden.has(key)) hidden.delete(key);
-  else { if(visTabs(sec).length<=1) return; hidden.add(key); }
-  resync(sec, keep===key?null:keep); renderSettings();
-}
-$('gear').addEventListener('click',openSettings);
-
-/* ════ overlays ════ */
-const scrim=$('scrim');
-function openSheet(id){ scrim.classList.add('open'); $(id).classList.add('open'); }
-function closeSheets(){ scrim.classList.remove('open'); document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('open')); }
-scrim.addEventListener('click',closeSheets);
-document.querySelectorAll('[data-close]').forEach(x=>x.addEventListener('click',closeSheets));
-
-/* ════ weather ════ */
-function renderWeatherMini(){
-  const w=LATEST.weather; if(!w||!w.current) return;
-  const c=w.current, info=wxInfo(c.weather_code);
-  $('wxMiniIc').innerHTML=wxIcon(info.type);
-  $('wxMiniT').textContent=Math.round(c.temperature_2m)+'\u00B0';
-}
-function renderWeatherSheet(){
-  const w=LATEST.weather; if(!w||!w.current) return;
-  const c=w.current, info=wxInfo(c.weather_code);
-  $('wxBig').innerHTML=wxIcon(info.type);
-  $('wxTemp').textContent=Math.round(c.temperature_2m)+'\u00B0';
-  $('wxCond').textContent=info.label;
-  $('wxFeels').textContent=`Feels ${Math.round(c.apparent_temperature)}\u00B0 \u00B7 Humidity ${c.relative_humidity_2m}% \u00B7 Wind ${Math.round(c.wind_speed_10m)} km/h`;
-  $('wxSheetLoc').textContent=(news.location.city||'').toUpperCase();
-  const hr=h=>{ const t=new Date(h.time), hh=t.getHours(), lbl=hh===0?'12a':hh<12?hh+'a':hh===12?'12p':(hh-12)+'p'; return `<div class="wx-hr"><span class="h">${lbl}</span><span class="ic">${wxIcon(wxInfo(h.code).type)}</span><span class="tp">${Math.round(h.temp)}\u00B0</span><span class="pp">${h.pop??0}%</span></div>`; };
-  $('wxHourly').innerHTML=(w.hourly||[]).map(hr).join('');
-  $('wxDaily').innerHTML=(w.daily||[]).map((d,i)=>{ const dn=i===0?'Today':new Date(d.date).toLocaleDateString([], {weekday:'short'}); return `<div class="wx-day"><span class="dn">${dn}</span><span class="di">${wxIcon(wxInfo(d.code).type)}</span><span class="dr"><span class="dmax">${Math.round(d.max)}\u00B0</span> <span class="dmin">${Math.round(d.min)}\u00B0</span></span></div>`; }).join('');
-}
-$('wxMini').addEventListener('click',()=>{ renderWeatherSheet(); openSheet('wxSheet'); });
-
-/* ════ location ════ */
-function buildLocList(){
-  $('locList').innerHTML = LOCATIONS.map(l=>`<div class="loc-opt ${l.key===news.location.key?'sel':''}" data-key="${l.key}"><span class="lcode">${l.code}</span><span class="lcity">${esc(l.city)}</span><span class="lcheck">\u2713</span></div>`).join('');
-}
-$('locChip').addEventListener('click',()=>{ buildLocList(); openSheet('locSheet'); });
-$('locList').addEventListener('click',e=>{
-  const o=e.target.closest('.loc-opt'); if(!o) return;
-  news.setLocationByKey(o.dataset.key);
-  $('locCode').textContent=news.location.code;
-  closeSheets(); news.refresh();
-});
-$('locDetect').addEventListener('click',()=>{
-  const b=$('locDetect'); b.textContent='\u2316 Locating\u2026';
-  if(!navigator.geolocation){ b.textContent='\u2316 Not available'; return; }
-  navigator.geolocation.getCurrentPosition(p=>{
-    news.setLocationByCoords(p.coords.latitude,p.coords.longitude);
-    $('locCode').textContent=news.location.code;
-    b.textContent='\u2316 Detect my location'; closeSheets(); news.refresh();
-  }, ()=>{ b.textContent='\u2316 Permission denied'; setTimeout(()=>b.textContent='\u2316 Detect my location',2200); }, {timeout:8000});
-});
-
-/* ════ misc ════ */
-function flashHint(txt){ const h=$('hint'); if(txt) h.textContent=txt; h.classList.add('show'); clearTimeout(h._t); h._t=setTimeout(()=>h.classList.remove('show'),2200); }
-document.querySelector('.brand').addEventListener('click',()=>{ flashHint('refreshing\u2026'); news.refresh(); });
-
-/* ════ live data events ════ */
-news.on('refresh:start', ()=>document.body.classList.add('refreshing'));
-news.on('update', ()=>{ ui.loaded=true; document.body.classList.remove('refreshing'); renderActivePane(); renderPinBar(); renderWeatherMini(); });
-news.on('weather', ()=>{ renderWeatherMini(); if($('wxSheet').classList.contains('open')) renderWeatherSheet(); });
-news.on('scores',  ()=>{ if(ui.section==='scores')  renderActivePane(); });
-news.on('markets', ()=>{ if(ui.section==='markets') renderActivePane(); });
-news.on('topics',  ()=>{ if(ui.section==='news'||ui.section==='pages') renderActivePane(); });
-
-/* ════ boot ════ */
-(async function boot(){
-  try{ await news.init(); }catch(e){ console.error('init', e); }
-  $('locCode').textContent = news.location.code;
-  switchSection('news');
-  news.start();                       // immediate fetch + polling; events fill the UI
-  setTimeout(()=>flashHint('\u2190 swipe topics \u00B7 tap a pin to filter \u2192'),900);
+  function pinList(ctx) {
+    return ctx === "pinned" ? state.PINNED_TOPICS : ctx === "sports" ? state.SPORTS_PINNED : ctx === "stocks" ? state.STOCKS : ctx === "tsx" ? state.CA_STOCKS : [];
+  }
+  function pinCount(ctx, v) {
+    if (ctx === "pinned") return PIN_COUNTS[v] || 0;
+    if (ctx === "sports") return SPIN_COUNTS[v] || 0;
+    return 0;
+  }
+  function renderPinBar() {
+    const ctx = pinCtx(), wrap = $("pinbarWrap");
+    if (!ctx) {
+      wrap.classList.remove("show");
+      return;
+    }
+    const cfg = PINCFG[ctx];
+    const pills = pinList(ctx).map((v) => {
+      const cnt = cfg.count ? `<span class="cnt">${pinCount(ctx, v)}</span>` : "";
+      const star = cfg.star ? '<span class="star">\u2605</span>' : "";
+      const label = cfg.kind === "ticker" ? v.toUpperCase() + (ctx === "tsx" ? ".TO" : "") : v;
+      const on = ui.pinFilter[ctx] === v ? " on" : "";
+      return `<span class="pin-pill${on}" data-pin="${escAttr(v)}">${star}${esc(label)}${cnt}<span class="pin-x" data-rm="${escAttr(v)}">\xD7</span></span>`;
+    }).join("");
+    wrap.querySelector(".pinbar").innerHTML = pills + `<span class="pin-add">+ ${cfg.word}</span>`;
+    wrap.classList.add("show");
+  }
+  $("pinbarWrap").addEventListener("click", (e) => {
+    const rm = e.target.closest(".pin-x");
+    if (rm) {
+      removePin(pinCtx(), rm.dataset.rm);
+      return;
+    }
+    if (e.target.closest(".pin-add")) {
+      openAddSheet(pinCtx());
+      return;
+    }
+    const pill = e.target.closest(".pin-pill");
+    if (pill) {
+      toggleFilter(pinCtx(), pill.dataset.pin);
+    }
+  });
+  function toggleFilter(ctx, val2) {
+    if (!ctx) return;
+    ui.pinFilter[ctx] = ui.pinFilter[ctx] === val2 ? null : val2;
+    renderActivePane();
+    renderPinBar();
+  }
+  function removePin(ctx, val2) {
+    const list = pinList(ctx), i = list.findIndex((x) => x === val2);
+    if (i >= 0) list.splice(i, 1);
+    if (ui.pinFilter[ctx] === val2) ui.pinFilter[ctx] = null;
+    renderPinBar();
+    renderActivePane();
+    scheduleRefresh();
+  }
+  var addCtx = null;
+  function openAddSheet(ctx) {
+    addCtx = ctx;
+    const cfg = PINCFG[ctx];
+    $("addTitle").textContent = cfg.title;
+    $("pinInput").placeholder = cfg.ph;
+    $("addHint").textContent = cfg.hint;
+    $("pinInput").value = "";
+    openSheet("addSheet");
+    setTimeout(() => $("pinInput").focus(), 260);
+  }
+  function addPin() {
+    if (!addCtx) return;
+    const cfg = PINCFG[addCtx];
+    let v = $("pinInput").value.trim();
+    if (!v) {
+      closeSheets();
+      return;
+    }
+    if (cfg.kind === "ticker") v = v.toUpperCase().replace(/\.TO$/, "");
+    const list = pinList(addCtx);
+    if (!list.some((x) => x.toLowerCase() === v.toLowerCase())) list.push(v);
+    closeSheets();
+    renderPinBar();
+    renderActivePane();
+    scheduleRefresh();
+  }
+  $("addBtn").addEventListener("click", addPin);
+  $("pinInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addPin();
+  });
+  var refreshTimer = null;
+  function scheduleRefresh() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => news.refresh(), 350);
+  }
+  function openSettings() {
+    ui.settingsSection = ui.section;
+    renderSettings();
+    openSheet("setSheet");
+  }
+  function renderSettings() {
+    const sec = ui.settingsSection;
+    $("setSheet").style.setProperty("--accent", `var(${SECTION_COLOR[sec]})`);
+    $("setSeg").innerHTML = Object.keys(SECTIONS).map((s) => `<button class="${s === sec ? "active" : ""}" data-sec="${s}">${SECTIONS[s].label}</button>`).join("");
+    const order = ui.tabOrder[sec], hidden = ui.tabHidden[sec];
+    const visCount = order.filter((k) => !hidden.has(k)).length;
+    $("setList").innerHTML = order.map((k, i) => {
+      const off = hidden.has(k), lock = !off && visCount <= 1 ? " lock" : "";
+      return `<div class="set-row${off ? " off" : ""}" data-key="${k}">
+      <span class="set-num">${i + 1}</span><span class="set-label">${TAB_LABEL[k]}</span>
+      <span class="set-mv"><button data-mv="up" ${i === 0 ? "disabled" : ""}>\u25B2</button><button data-mv="down" ${i === order.length - 1 ? "disabled" : ""}>\u25BC</button></span>
+      <span class="set-toggle ${off ? "" : "on"}${lock}" data-vis><b></b></span></div>`;
+    }).join("");
+  }
+  $("setSeg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (b) {
+      ui.settingsSection = b.dataset.sec;
+      renderSettings();
+    }
+  });
+  $("setList").addEventListener("click", (e) => {
+    const row = e.target.closest(".set-row");
+    if (!row) return;
+    const sec = ui.settingsSection, key = row.dataset.key;
+    const mv = e.target.closest("[data-mv]");
+    if (mv) {
+      moveTab(sec, key, mv.dataset.mv);
+      return;
+    }
+    if (e.target.closest("[data-vis]")) toggleHidden(sec, key);
+  });
+  $("setAdd").addEventListener("click", () => flashHint("custom feeds \u2014 coming soon"));
+  function curKey(sec) {
+    const t = visTabs(sec)[ui.tab[sec]];
+    return t ? t[0] : null;
+  }
+  function resync(sec, keepKey) {
+    const vis = visTabs(sec);
+    let idx = keepKey != null ? vis.findIndex((t) => t[0] === keepKey) : -1;
+    if (idx < 0) idx = Math.min(ui.tab[sec], vis.length - 1);
+    ui.tab[sec] = Math.max(0, idx);
+    if (sec === ui.section) {
+      buildStrip();
+      buildTrack();
+      renderPinBar();
+    }
+  }
+  function moveTab(sec, key, dir) {
+    const arr = ui.tabOrder[sec], i = arr.indexOf(key), j = dir === "up" ? i - 1 : i + 1;
+    if (j < 0 || j >= arr.length) return;
+    const keep = sec === ui.section ? curKey(sec) : null;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    resync(sec, keep);
+    renderSettings();
+  }
+  function toggleHidden(sec, key) {
+    const hidden = ui.tabHidden[sec], keep = sec === ui.section ? curKey(sec) : null;
+    if (hidden.has(key)) hidden.delete(key);
+    else {
+      if (visTabs(sec).length <= 1) return;
+      hidden.add(key);
+    }
+    resync(sec, keep === key ? null : keep);
+    renderSettings();
+  }
+  $("gear").addEventListener("click", openSettings);
+  var scrim = $("scrim");
+  function openSheet(id) {
+    scrim.classList.add("open");
+    $(id).classList.add("open");
+  }
+  function closeSheets() {
+    scrim.classList.remove("open");
+    document.querySelectorAll(".sheet").forEach((s) => s.classList.remove("open"));
+  }
+  scrim.addEventListener("click", closeSheets);
+  document.querySelectorAll("[data-close]").forEach((x) => x.addEventListener("click", closeSheets));
+  function renderWeatherMini() {
+    const w = LATEST.weather;
+    if (!w || !w.current) return;
+    const c = w.current, info = wxInfo(c.weather_code);
+    $("wxMiniIc").innerHTML = wxIcon(info.type);
+    $("wxMiniT").textContent = Math.round(c.temperature_2m) + "\xB0";
+  }
+  function renderWeatherSheet() {
+    const w = LATEST.weather;
+    if (!w || !w.current) return;
+    const c = w.current, info = wxInfo(c.weather_code);
+    $("wxBig").innerHTML = wxIcon(info.type);
+    $("wxTemp").textContent = Math.round(c.temperature_2m) + "\xB0";
+    $("wxCond").textContent = info.label;
+    $("wxFeels").textContent = `Feels ${Math.round(c.apparent_temperature)}\xB0 \xB7 Humidity ${c.relative_humidity_2m}% \xB7 Wind ${Math.round(c.wind_speed_10m)} km/h`;
+    $("wxSheetLoc").textContent = (news.location.city || "").toUpperCase();
+    const hr = (h) => {
+      const t = new Date(h.time), hh = t.getHours(), lbl = hh === 0 ? "12a" : hh < 12 ? hh + "a" : hh === 12 ? "12p" : hh - 12 + "p";
+      return `<div class="wx-hr"><span class="h">${lbl}</span><span class="ic">${wxIcon(wxInfo(h.code).type)}</span><span class="tp">${Math.round(h.temp)}\xB0</span><span class="pp">${h.pop ?? 0}%</span></div>`;
+    };
+    $("wxHourly").innerHTML = (w.hourly || []).map(hr).join("");
+    $("wxDaily").innerHTML = (w.daily || []).map((d, i) => {
+      const dn = i === 0 ? "Today" : new Date(d.date).toLocaleDateString([], { weekday: "short" });
+      return `<div class="wx-day"><span class="dn">${dn}</span><span class="di">${wxIcon(wxInfo(d.code).type)}</span><span class="dr"><span class="dmax">${Math.round(d.max)}\xB0</span> <span class="dmin">${Math.round(d.min)}\xB0</span></span></div>`;
+    }).join("");
+  }
+  $("wxMini").addEventListener("click", () => {
+    renderWeatherSheet();
+    openSheet("wxSheet");
+  });
+  function buildLocList() {
+    $("locList").innerHTML = LOCATIONS.map((l) => `<div class="loc-opt ${l.key === news.location.key ? "sel" : ""}" data-key="${l.key}"><span class="lcode">${l.code}</span><span class="lcity">${esc(l.city)}</span><span class="lcheck">\u2713</span></div>`).join("");
+  }
+  $("locChip").addEventListener("click", () => {
+    buildLocList();
+    openSheet("locSheet");
+  });
+  $("locList").addEventListener("click", (e) => {
+    const o = e.target.closest(".loc-opt");
+    if (!o) return;
+    news.setLocationByKey(o.dataset.key);
+    $("locCode").textContent = news.location.code;
+    closeSheets();
+    news.refresh();
+  });
+  $("locDetect").addEventListener("click", () => {
+    const b = $("locDetect");
+    b.textContent = "\u2316 Locating\u2026";
+    if (!navigator.geolocation) {
+      b.textContent = "\u2316 Not available";
+      return;
+    }
+    navigator.geolocation.getCurrentPosition((p) => {
+      news.setLocationByCoords(p.coords.latitude, p.coords.longitude);
+      $("locCode").textContent = news.location.code;
+      b.textContent = "\u2316 Detect my location";
+      closeSheets();
+      news.refresh();
+    }, () => {
+      b.textContent = "\u2316 Permission denied";
+      setTimeout(() => b.textContent = "\u2316 Detect my location", 2200);
+    }, { timeout: 8e3 });
+  });
+  function flashHint(txt) {
+    const h = $("hint");
+    if (txt) h.textContent = txt;
+    h.classList.add("show");
+    clearTimeout(h._t);
+    h._t = setTimeout(() => h.classList.remove("show"), 2200);
+  }
+  document.querySelector(".brand").addEventListener("click", () => {
+    flashHint("refreshing\u2026");
+    news.refresh();
+  });
+  news.on("refresh:start", () => document.body.classList.add("refreshing"));
+  news.on("update", () => {
+    ui.loaded = true;
+    document.body.classList.remove("refreshing");
+    renderActivePane();
+    renderPinBar();
+    renderWeatherMini();
+  });
+  news.on("weather", () => {
+    renderWeatherMini();
+    if ($("wxSheet").classList.contains("open")) renderWeatherSheet();
+  });
+  news.on("scores", () => {
+    if (ui.section === "scores") renderActivePane();
+  });
+  news.on("markets", () => {
+    if (ui.section === "markets") renderActivePane();
+  });
+  news.on("topics", () => {
+    if (ui.section === "news" || ui.section === "pages") renderActivePane();
+  });
+  (async function boot() {
+    try {
+      await news.init();
+    } catch (e) {
+      console.error("init", e);
+    }
+    $("locCode").textContent = news.location.code;
+    switchSection("news");
+    news.start();
+    setTimeout(() => flashHint("\u2190 swipe topics \xB7 tap a pin to filter \u2192"), 900);
+  })();
 })();
 
 </script>
