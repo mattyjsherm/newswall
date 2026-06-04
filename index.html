@@ -121,6 +121,8 @@
   .pop4{color:#ff6a4d; background:rgba(255,106,77,.18);}
   .pop5{color:#ff4d4d; background:rgba(255,77,77,.22);}
   .s-meta{margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-dimmer); flex-shrink:0;}
+  .pin-origin{font-family:'IBM Plex Mono',monospace; font-size:9.5px; letter-spacing:.03em; text-transform:uppercase; color:var(--c-pin,#52d6a0); background:color-mix(in srgb, var(--c-pin,#52d6a0) 14%, transparent); border-radius:3px; padding:1px 5px; white-space:nowrap;}
+  .story.pinned-in{border-left:2px solid var(--c-pin,#52d6a0); padding-left:8px;}
   .s-head{font-family:'Archivo',sans-serif; font-size:15.5px; line-height:1.28; color:var(--ink); font-weight:500;}
   .tomato{font-family:'IBM Plex Mono',monospace; font-size:10px; font-weight:600; padding:1px 6px; border-radius:3px;}
   .tomato.fresh{background:rgba(250,50,10,.16); color:#ff6a4d;} .tomato.rotten{background:rgba(95,194,62,.16); color:#7bd45a;}
@@ -142,6 +144,15 @@
   .sc-date.active{color:var(--c-sports); border-color:var(--c-sports); background:rgba(62,224,137,.08);}
   .sc-lg{padding:13px 15px 5px; font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.1em; color:var(--ink-dimmer);}
   .sc-lg.live{color:var(--c-live);}
+  /* league sub-headers in the Sports News tab: slim gradient wash + icon, collapsible */
+  .lg-head{position:relative; isolation:isolate; overflow:hidden; display:flex; align-items:center; gap:8px; padding:8px 11px; margin:10px 0 7px; border-radius:5px; cursor:pointer; font-family:'Bebas Neue',sans-serif; font-size:17px; letter-spacing:.1em; color:var(--ink);}
+  .lg-head::before{content:''; position:absolute; inset:0; z-index:-1; background:linear-gradient(90deg, var(--lg,transparent), transparent 60%); opacity:.18;}
+  .lg-head .chev{font-size:11px; color:var(--ink-dim); transition:transform .15s;}
+  .lg-head.collapsed .chev{transform:rotate(-90deg);}
+  .lg-head .lg-icon{width:16px; height:16px; flex-shrink:0;}
+  .lg-head .lg-name{flex:1;}
+  .lg-head .lg-n{font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-dimmer); letter-spacing:.04em;}
+  .lg-body[hidden]{display:none;}
   .game{display:flex; flex-direction:column; gap:6px; margin:0 15px 9px; padding:11px 13px; background:var(--bg-1); border:1px solid var(--line); border-radius:9px;}
   .game.live{border-color:rgba(255,77,77,.4); box-shadow:inset 0 0 0 1px rgba(255,77,77,.1);}
   .game.fav{border-left:3px solid var(--c-fav);}
@@ -213,6 +224,7 @@
   .pinbar::-webkit-scrollbar{display:none;}
   .pin-pill{flex-shrink:0; display:inline-flex; align-items:center; gap:6px; font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.02em; padding:5px 5px 5px 10px; border:1px solid color-mix(in srgb, var(--pc,var(--accent)) 45%, var(--line-bright)); border-radius:7px; background:color-mix(in srgb, var(--pc,var(--accent)) 11%, transparent); color:var(--pc,var(--accent)); white-space:nowrap;}
   .pin-pill .cnt{font-weight:700; background:color-mix(in srgb, var(--pc,var(--accent)) 24%, transparent); border-radius:8px; padding:0 6px; font-size:11px;}
+  .pin-pill .cnt.capped{background:color-mix(in srgb, var(--c-world) 30%, transparent); color:var(--c-world);}
   .pin-pill .star{font-size:11px;}
   .pin-pill .pin-x{cursor:pointer; opacity:.6; font-size:15px; line-height:1; padding:0 4px; color:var(--ink-dim);}
   .pin-pill .pin-x:active{opacity:1; color:var(--ink);}
@@ -440,6 +452,21 @@
     ["soccer/eng.1", "EPL"]
   ];
   var SPORTS_FEED = "https://www.espn.com/espn/rss/news";
+  // per-league feeds for the Sports "News" tab — each story is authoritatively in the right league
+  var SPORTS_LEAGUES = [
+    ["MLB", "https://www.espn.com/espn/rss/mlb/news", "MLB"],
+    ["NFL", "https://www.espn.com/espn/rss/nfl/news", "NFL"],
+    ["NBA", "https://www.espn.com/espn/rss/nba/news", "NBA"],
+    ["NHL", "https://www.espn.com/espn/rss/nhl/news", "NHL"],
+    ["MMA", "https://www.espn.com/espn/rss/mma/news", "MMA / UFC"]
+  ];
+  var LEAGUE_META = {
+    MLB: { color: "#4cc4ff", icon: '<circle cx="12" cy="12" r="9"/><path d="M6.5 5.5C9 8 9 16 6.5 18.5M17.5 5.5C15 8 15 16 17.5 18.5"/>' },
+    NFL: { color: "#b07a4b", icon: '<ellipse cx="12" cy="12" rx="9" ry="5.5"/><path d="M7 12h10M12 9.5v5M8.5 10.5v3M15.5 10.5v3"/>' },
+    NBA: { color: "#ff8a3c", icon: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3v18M5 6c3 3 11 3 14 0M5 18c3-3 11-3 14 0"/>' },
+    NHL: { color: "#8fb7ff", icon: '<ellipse cx="12" cy="15" rx="7" ry="2.5"/><path d="M5 15V9M19 15V9"/>' },
+    MMA: { color: "#ff5c6c", icon: '<path d="M7 11V7.5a1.5 1.5 0 0 1 3 0V11M10 10.5V6a1.5 1.5 0 0 1 3 0v4.5M13 10.5V7a1.5 1.5 0 0 1 3 0v5a5 5 0 0 1-5 5H9a4 4 0 0 1-4-4v-1.5a1.5 1.5 0 0 1 3 0Z"/>' }
+  };
   var SPORTS_PIPE = [
     ["https://www.espn.com/espn/rss/mlb/news", "ESPN MLB"],
     ["https://www.espn.com/espn/rss/nba/news", "ESPN NBA"],
@@ -473,6 +500,21 @@
     ["https://fortune.com/feed/", "FORTUNE"],
     ["https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/business/", "G&M"]
   ];
+  // Pinned backbone: direct feeds filtered by keyword for reliability, each tagged with the topic
+  // DOMAIN it belongs to so matches can also be injected into the relevant panel (business/canada/etc.).
+  var PINNED_PIPE = [
+    ["https://www.cnbc.com/id/10001147/device/rss/rss.html", "CNBC", "business"],
+    ["https://finance.yahoo.com/news/rssindex", "Yahoo", "business"],
+    ["https://fortune.com/feed/", "Fortune", "business"],
+    ["https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/business/", "G&M", "business"],
+    ["https://www.cbc.ca/webfeed/rss/rss-canada", "CBC", "canada"],
+    ["https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/canada/", "G&M", "canada"],
+    ["https://feeds.bbci.co.uk/news/world/rss.xml", "BBC", "world"],
+    ["https://feeds.arstechnica.com/arstechnica/index", "Ars", "tech"]
+  ];
+  var PIN_PER_KW = 20;        // max rows kept per pinned keyword; panel total grows with # of pins
+  var PIN_CAPPED = {};        // keyword -> true when it hit the cap (shown as "20+" on the pill)
+  var PINNED_BY_DOMAIN = {};  // last fetch's direct-feed matches, bucketed by topic domain, for injection
   var AD_PATTERNS = /(\bdaily deals\b|\bbest deals?\b|\bdeal of the day\b|\d+%\s*off|\bsave \$\d|\bprime day\b|\bblack friday\b|\bcyber monday\b|\bdiscount code\b|\bcoupon\b|\blowest price\b|\bsponsored\b|\bgiveaway\b|\bsweepstakes\b|^\s*\[deal\]|\bign store\b)/i;
   var INDEXES = [["SPY", "S&P 500"], ["QQQ", "NASDAQ"], ["DIA", "DOW"]];
   var DEFAULT_STOCKS = ["AAPL", "MSFT", "NVDA", "TSLA"];
@@ -745,8 +787,8 @@
     return res.filter((r) => r.status === "fulfilled").flatMap((r) => r.value);
   }
   async function getSportsNews() {
-    const items = await getRss(SPORTS_FEED);
-    return items.map((i) => ({ ...i, tag: "sport", label: "Sport" }));
+    const per = await Promise.all(SPORTS_LEAGUES.map(([lg, url, label]) => getRss(url).then((items) => items.map((i) => ({ ...i, tag: "sport", label, league: lg }))).catch(() => [])));
+    return per.flat();
   }
   function kwRegexes(kw) {
     const esc2 = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -972,24 +1014,51 @@
   async function getPinnedNews() {
     if (!state.PINNED_TOPICS.length) {
       Object.keys(PIN_COUNTS).forEach((k) => delete PIN_COUNTS[k]);
+      Object.keys(PIN_CAPPED).forEach((k) => delete PIN_CAPPED[k]);
+      PINNED_BY_DOMAIN = {};
       return [];
     }
-    const settled = await Promise.allSettled(state.PINNED_TOPICS.map((t) => getRss(gnewsSearch(t))));
+    const matchers = state.PINNED_TOPICS.map((kw) => [kw, kwRegexes(kw)]);
+    const firstKw = (title) => {
+      const t = title || "";
+      const m = matchers.find(([, res]) => res.some((re) => re.test(t)));
+      return m ? m[0] : null;
+    };
+    const byDomain = {};
+    // breadth: Google News + Bing per keyword
+    const searchByKw = {};
+    await Promise.all(state.PINNED_TOPICS.map(async (kw) => {
+      const [g, b] = await Promise.all([
+        getRss(gnewsSearch(kw)).catch(() => []),
+        getRss(bingNewsSearch(kw)).catch(() => [])
+      ]);
+      searchByKw[kw] = [...g, ...b].map((i) => ({ ...i, tag: "pin", label: kw.toUpperCase(), kw }));
+    }));
+    // reliability: direct feeds, filtered by keyword; tag matches with their topic domain for injection
+    await Promise.all(PINNED_PIPE.map(async ([url, src, domain]) => {
+      const items = await getRss(url).catch(() => []);
+      items.forEach((i) => {
+        const kw = firstKw(i.title);
+        if (kw) {
+          const tagged = { ...i, tag: "pin", label: kw.toUpperCase(), kw, srcLabel: src, pinKw: kw };
+          (searchByKw[kw] = searchByKw[kw] || []).push(tagged);
+          (byDomain[domain] = byDomain[domain] || []).push(tagged);
+        }
+      });
+    }));
+    PINNED_BY_DOMAIN = byDomain;
+    // cap PER KEYWORD (not globally); panel total grows with the number of pins
     const out = [];
-    settled.forEach((r, idx) => {
-      if (r.status !== "fulfilled") return;
-      const kw = state.PINNED_TOPICS[idx];
-      r.value.forEach((i) => out.push({ ...i, tag: "pin", label: kw.toUpperCase(), kw }));
-    });
-    const final = cleanFeed(out).slice(0, 40);
     Object.keys(PIN_COUNTS).forEach((k) => delete PIN_COUNTS[k]);
+    Object.keys(PIN_CAPPED).forEach((k) => delete PIN_CAPPED[k]);
     state.PINNED_TOPICS.forEach((kw) => {
-      PIN_COUNTS[kw] = 0;
+      const deduped = cleanFeed(searchByKw[kw] || []);
+      if (deduped.length > PIN_PER_KW) PIN_CAPPED[kw] = true;
+      const kept = deduped.slice(0, PIN_PER_KW);
+      PIN_COUNTS[kw] = kept.length;
+      out.push(...kept);
     });
-    final.forEach((i) => {
-      if (i.kw != null && PIN_COUNTS[i.kw] != null) PIN_COUNTS[i.kw]++;
-    });
-    return final;
+    return cleanFeed(out);   // final cross-keyword dedupe; no overall slice
   }
   function highlightReviews(items, def) {
     const meter = !!(def && def.meter === "rt");
@@ -1016,17 +1085,29 @@
   async function fetchTopic(key) {
     const def = TOPIC_DEFS[key];
     if (!def) return [];
-    if (def.fetch) return (FETCHERS[def.fetch] || (() => []))();
-    let items = await getRss(def.feed);
-    if (def.extra && def.extra.length) {
-      const more = await Promise.allSettled(def.extra.map(([url]) => getRss(url)));
-      more.forEach((r, idx) => {
-        if (r.status === "fulfilled") r.value.forEach((i) => items.push({ ...i, srcLabel: def.extra[idx][1] }));
-      });
-      items = cleanFeed(items).slice(0, 40);
+    let items;
+    if (def.fetch) {
+      items = await (FETCHERS[def.fetch] || (() => []))();
+    } else {
+      items = await getRss(def.feed);
+      if (def.extra && def.extra.length) {
+        const more = await Promise.allSettled(def.extra.map(([url]) => getRss(url)));
+        more.forEach((r, idx) => {
+          if (r.status === "fulfilled") r.value.forEach((i) => items.push({ ...i, srcLabel: def.extra[idx][1] }));
+        });
+        items = cleanFeed(items).slice(0, 40);
+      }
+      const tf = def.transform ? TRANSFORMS[def.transform] : null;
+      if (tf) items = tf(items, def);
     }
-    const tf = def.transform ? TRANSFORMS[def.transform] : null;
-    return tf ? tf(items, def) : items;
+    // cross-panel pinned injection: surface pinned-keyword stories that belong to THIS topic's domain
+    // (e.g. an "Apotex" hit from a business feed appears in Business too), badged so the origin is clear.
+    if (key !== "pinned") {
+      const dom = def.domain || key;
+      const inject = (PINNED_BY_DOMAIN[dom] || []).map((i) => ({ ...i, fromPin: true, pinChip: i.pinKw }));
+      if (inject.length) items = cleanFeed([...inject, ...items]).slice(0, 44);
+    }
+    return items;
   }
   var cbcRegional = (loc) => `https://www.cbc.ca/webfeed/rss/rss-canada-${loc.cbc}`;
   var globeRegional = (loc) => loc.globe ? `https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/canada/${loc.globe}/` : null;
@@ -1209,9 +1290,17 @@
         this._emit("weather", weather);
       }
       const keys = visibleTopics();
-      const tr = await Promise.allSettled(keys.map((k) => fetchTopic(k)));
+      // Fetch 'pinned' FIRST so PINNED_BY_DOMAIN is populated before other panels read it for injection.
+      if (keys.includes("pinned")) {
+        try {
+          LATEST.topics.pinned = await fetchTopic("pinned");
+        } catch (e) {
+        }
+      }
+      const rest = keys.filter((k) => k !== "pinned");
+      const tr = await Promise.allSettled(rest.map((k) => fetchTopic(k)));
       tr.forEach((r, i) => {
-        if (r.status === "fulfilled") LATEST.topics[keys[i]] = r.value;
+        if (r.status === "fulfilled") LATEST.topics[rest[i]] = r.value;
       });
       popularityPass(LATEST.topics);
       this._emit("topics", { keys, topics: LATEST.topics });
@@ -1338,8 +1427,10 @@
     const title = def.strip ? String(it.title).replace(def.strip, "") : it.title;
     const readCls = READ.has(it.link) ? " read" : "";
     const reviewCls = it.isReview ? " review-accent" : "";
-    return `<a class="story${reviewCls}${readCls}" href="${escAttr(it.link)}" target="_blank" rel="noopener" data-link="${escAttr(it.link)}">
-    <div class="s-top"><span class="s-tag" style="background:color-mix(in srgb, ${tc} 16%, transparent);color:${tc}">${fav}${esc(label)}</span>${src}${meter}${pop}<span class="s-meta">${meta}</span></div>
+    const pinBadge = it.fromPin && it.pinChip && key !== "pinned" ? `<span class="pin-origin">\u{1F4CC} ${esc(it.pinChip)}</span>` : "";
+    const pinnedInCls = it.fromPin && key !== "pinned" ? " pinned-in" : "";
+    return `<a class="story${reviewCls}${readCls}${pinnedInCls}" href="${escAttr(it.link)}" target="_blank" rel="noopener" data-link="${escAttr(it.link)}">
+    <div class="s-top"><span class="s-tag" style="background:color-mix(in srgb, ${tc} 16%, transparent);color:${tc}">${fav}${esc(label)}</span>${src}${pinBadge}${meter}${pop}<span class="s-meta">${meta}</span></div>
     <div class="s-head">${esc(title)}</div></a>`;
   }
   function feedStories(items, key) {
@@ -1410,8 +1501,29 @@
     if (rest.length) html += `<div class="sc-lg">${filter === "all" ? "GAMES" : esc(filter)}</div>` + rest.map(card).join("");
     return html + "</div>";
   }
+  function leagueIconSvg(lg) {
+    const m = LEAGUE_META[lg];
+    if (!m) return "";
+    return `<svg class="lg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:${m.color}">${m.icon}</svg>`;
+  }
+  function sportsNewsPane() {
+    const items = LATEST.topics.sports || [];
+    if (!items.length) return `<div class="pane-inner"><div class="empty">${ui.loaded ? "No items" : "Loading\u2026"}</div></div>`;
+    let html = `<div class="pane-inner">`;
+    SPORTS_LEAGUES.forEach(([lg, , label]) => {
+      const sub = items.filter((i) => i.league === lg);
+      if (!sub.length) return;
+      const m = LEAGUE_META[lg] || { color: "var(--c-sports)" };
+      const gk = "sportslg:" + lg;
+      const collapsed = COLLAPSED.has(gk);
+      html += `<div class="lg-head${collapsed ? " collapsed" : ""}" data-collapse="${gk}" style="--lg:${m.color}"><span class="chev">\u25BE</span>${leagueIconSvg(lg)}<span class="lg-name">${esc(label)}</span><span class="lg-n">${sub.length}</span></div>`;
+      html += `<div class="lg-body"${collapsed ? " hidden" : ""}>${sub.map((i) => storyHTML(i, "sports")).join("")}</div>`;
+    });
+    return html + "</div>";
+  }
   function paneContent(section, tabKey) {
     if (section === "news" || section === "pages") {
+      if (section === "news" && tabKey === "sports" && state.SPORTS_TAB === "new") return sportsNewsPane();
       let items = section === "news" ? newsItems(tabKey) : LATEST.topics[tabKey] || [];
       if (section === "news" && tabKey === "pinned" && ui.pinFilter.pinned) items = items.filter((i) => (i.label || "") === ui.pinFilter.pinned.toUpperCase());
       if (section === "news" && tabKey === "sports" && state.SPORTS_TAB === "pinned" && ui.pinFilter.sports) items = items.filter((i) => (i.label || "") === ui.pinFilter.sports.toUpperCase());
@@ -1474,6 +1586,17 @@
     if (t) selectTab(+t.dataset.i);
   });
   $("track").addEventListener("click", (e) => {
+    const lh = e.target.closest("[data-collapse]");
+    if (lh) {
+      e.preventDefault();
+      const gk = lh.dataset.collapse;
+      if (COLLAPSED.has(gk)) COLLAPSED.delete(gk); else COLLAPSED.add(gk);
+      lh.classList.toggle("collapsed");
+      const body = lh.nextElementSibling;
+      if (body && body.classList.contains("lg-body")) body.hidden = COLLAPSED.has(gk);
+      save();
+      return;
+    }
     const sd = e.target.closest(".sc-date");
     if (sd) {
       e.preventDefault();
@@ -1606,7 +1729,8 @@
     }
     const cfg = PINCFG[ctx];
     const pills = pinList(ctx).map((v) => {
-      const cnt = cfg.count ? `<span class="cnt">${pinCount(ctx, v)}</span>` : "";
+      const capped = ctx === "pinned" && PIN_CAPPED[v];
+      const cnt = cfg.count ? `<span class="cnt${capped ? " capped" : ""}"${capped ? ' title="Capped at ' + PIN_PER_KW + '"' : ""}>${pinCount(ctx, v)}${capped ? "+" : ""}</span>` : "";
       const star = cfg.star ? '<span class="star">\u2605</span>' : "";
       const label = cfg.kind === "ticker" ? v.toUpperCase() + (ctx === "tsx" ? ".TO" : "") : v;
       const on = ui.pinFilter[ctx] === v ? " on" : "";
