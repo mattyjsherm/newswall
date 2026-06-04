@@ -1,0 +1,16 @@
+{
+  "name": "newswall",
+  "version": "1.0.0",
+  "description": "News Wall - Live news, sports, markets and weather.",
+  "main": "index.html",
+  "scripts": {
+    "dev": "npx serve .",
+    "build": "echo 'Static HTML project - no build step required'"
+  },
+  "keywords": ["news", "weather", "sports", "markets"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vercel/analytics": "^1.4.1"
+  }
+}
